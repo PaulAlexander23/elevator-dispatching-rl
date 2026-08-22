@@ -1,0 +1,18 @@
+[project]
+name = "lift-rl"
+version = "0.1.0"
+authors = [
+  { name="Paul Alexander", email="paulalexander23@live.co.uk" },
+]
+description = "Reinforcement learning of a lift controller."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICEN[CS]E*"]
+
+requires-python = ">=3.8"
+dependecies = [
+    "gymnasiumn",
+    "stable-baselines3",
+    "pytest",
+]
+
