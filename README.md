@@ -27,5 +27,5 @@ If the lift serves this floor, then:
 
 Observations
 - Lift position
-- Those waiting at each floor
-- The number of people in the lift that want each floor
+- Those waiting at each floor -> If there are people waiting at that floor
+- The number of people in the lift that want each floor -> If people in the lift want that floor

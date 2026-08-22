@@ -2,6 +2,7 @@ from gymnasium import Env, spaces
 import numpy as np
 from sim import LiftSim
 from time import sleep
+import random
 
 
 class LiftEnv(Env):
@@ -10,7 +11,7 @@ class LiftEnv(Env):
         self.metadata = {"render_modes": ["human", "none"], "render_fps": 1}
         self.render_mode = "none"
         self.action_space = spaces.Discrete(3)
-        self.observation_space = spaces.Box(0, 1, shape=(2,))
+        self.observation_space = spaces.Box(0, 1, shape=(21,))
         self.spec = None
         self.sim = LiftSim()
         self.steps = 0
@@ -21,6 +22,7 @@ class LiftEnv(Env):
               options=None,
               ):
         super().reset(seed=seed, options=options)
+        random.seed(seed)
 
         self.steps = 0
         self.sim.reset()
@@ -58,7 +60,17 @@ class LiftEnv(Env):
         return obs, reward, terminated, truncated, info
 
     def _map_state_to_obs(self, state):
-        return np.array([0, 0], dtype=np.float32)
+        obs = [state.lift_position / 9]
+        for floor in range(len(state.floor_passengers)):
+            obs.append(len(state.floor_passengers[floor]) > 0)
+        for floor in range(len(state.floor_passengers)):
+            is_floor_wanted = False
+            for passenger in state.lift_passengers:
+                if passenger.destination == floor:
+                    is_floor_wanted = True
+            obs.append(is_floor_wanted)
+
+        return np.array(obs, dtype=np.float32)
 
     def render(self):
         if self.render_mode == "human":
