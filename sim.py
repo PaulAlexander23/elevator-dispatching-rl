@@ -32,10 +32,13 @@ class LiftSim:
             self._state.lift_position -= 1
 
     def serve_floor(self):
+        n_passengers_served = 0
+
         # Remove passengers for this floor
         for passenger in self._state.lift_passengers:
             if passenger.destination == self._state.lift_position:
                 self._state.lift_passengers.remove(passenger)
+                n_passengers_served += 1
 
         # Add passengers to lift
         for n in range(self.lift_capacity - len(self._state.lift_passengers)):
@@ -43,6 +46,7 @@ class LiftSim:
                     self._state.lift_position]) != 0:
                 self._state.lift_passengers.append(self._state.floor_passengers[
                     self._state.lift_position].pop())
+        return n_passengers_served
 
     def sample_passengers(self):
         for floor in range(self.max_lift_position - self.min_lift_position):
