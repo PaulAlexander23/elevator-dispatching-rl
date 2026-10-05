@@ -1,16 +1,25 @@
 [project]
-name = "elevator-dispatching-rl2"
+name = "elevator-dispatching-rl"
 version = "0.1.0"
-description = "Add your description here"
+description = "Reinforcement learning for single-lift elevator dispatching with Gymnasium and Stable-Baselines3."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "John Paul Alexander" }]
 requires-python = ">=3.11"
 dependencies = [
     "gymnasium>=1.0.0",
-    "pytest>=9.1.1",
+    "numpy>=1.26",
     "stable-baselines3>=2.4.1",
     "torch>=2.2.2",
-    "torch-geometric>=2.8.0.post1",
 ]
+
+[project.optional-dependencies]
+gnn = ["torch-geometric>=2.8.0.post1"]
+bench = ["psutil>=5.9"]
+
+[dependency-groups]
+dev = ["pytest>=9.1.1"]
 
 [tool.uv]
 required-environments = [
