@@ -3,7 +3,7 @@ from time import sleep
 import numpy as np
 from gymnasium import Env, spaces
 
-from sim import LiftSim
+from elevator_rl.sim import LiftSim
 
 OBS_TYPES = ("box", "multi_binary", "multi_discrete", "custom")
 

@@ -1,7 +1,7 @@
 from gymnasium import Env
 from gymnasium.utils.env_checker import check_env
-from env import LiftEnv
-from sim import LiftState
+from elevator_rl.env import LiftEnv
+from elevator_rl.sim import LiftState
 
 
 def test_env_is_gym():

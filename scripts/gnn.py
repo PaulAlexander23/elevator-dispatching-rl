@@ -1,7 +1,9 @@
+"""Experimental: converting lift states to graphs for a GNN policy. Needs the `gnn` extra."""
+
 import torch
 from torch_geometric.data import Data
 import time
-from sim import LiftState, LiftSim
+from elevator_rl.sim import LiftState, LiftSim
 from torch.nn import Linear, ReLU
 from torch_geometric.nn import Sequential, GCNConv
 

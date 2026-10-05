@@ -1,6 +1,6 @@
 import pytest
 
-from main import main
+from elevator_rl.train import main
 
 
 def test_main_smoke(tmp_path):

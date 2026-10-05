@@ -1,4 +1,6 @@
-from env import LiftEnv
+import argparse
+
+from elevator_rl.env import LiftEnv
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.evaluation import evaluate_policy
@@ -39,5 +41,18 @@ def main(
     return model
 
 
+def cli():
+    parser = argparse.ArgumentParser(description="Train a PPO lift dispatcher.")
+    parser.add_argument("--timesteps", type=int, default=2_000_000)
+    parser.add_argument("--eval-freq", type=int, default=50_000)
+    parser.add_argument("--save-path", default="model.zip")
+    args = parser.parse_args()
+    main(
+        total_timesteps=args.timesteps,
+        eval_freq=args.eval_freq,
+        save_path=args.save_path,
+    )
+
+
 if __name__ == "__main__":
-    main()
+    cli()

@@ -1,4 +1,4 @@
-from sim import LiftSim, LiftState
+from elevator_rl.sim import LiftSim, LiftState
 
 
 def test_sim():

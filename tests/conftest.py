@@ -1,6 +1,6 @@
 import pytest
 
-import env
+from elevator_rl import env
 
 
 @pytest.fixture(autouse=True)
