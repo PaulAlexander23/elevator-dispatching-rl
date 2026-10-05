@@ -31,6 +31,23 @@ uv run python scripts/time_env.py
 uv run python scripts/time_ppo.py
 ```
 
+## Benchmark
+
+Compare the observation spaces (and the random / up-down baselines):
+
+```sh
+uv run python -m elevator_rl.benchmark --timesteps 200000 --seeds 3 --readme README.md
+```
+
+This trains PPO for each observation type and seed in parallel (one process
+per CPU by default; `--workers` to change), and rewrites the table below.
+Use `--obs-types custom box` to run a subset and `--json results.json` to keep
+the per-seed numbers.
+
+<!-- BENCHMARK:START -->
+_No results yet: run the command above to fill in this table._
+<!-- BENCHMARK:END -->
+
 ## Tests and linting
 
 ```sh
@@ -43,7 +60,8 @@ uv run ruff format .
 ## Layout
 
 ```
-src/elevator_rl/   sim.py (simulator), env.py (Gymnasium env), train.py (PPO training)
+src/elevator_rl/   sim.py (simulator), env.py (Gymnasium env), train.py (PPO training),
+                   baselines.py (hand-written policies), benchmark.py (obs-space comparison)
 tests/             pytest suite
 scripts/           evaluation, baselines, benchmarks and GNN experiments
 ```
