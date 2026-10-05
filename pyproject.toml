@@ -16,3 +16,7 @@ dependencies = [
 required-environments = [
  "sys_platform == 'darwin' and platform_machine == 'x86_64'"
 ]
+
+[tool.pytest.ini_options]
+addopts = "-m 'not slow'"
+markers = ["slow: long-running training tests (deselected by default; run with -m slow)"]
