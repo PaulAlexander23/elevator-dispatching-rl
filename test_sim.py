@@ -7,7 +7,7 @@ def test_sim():
 
 
 def test_state():
-    state = LiftState(10)
+    state = LiftState(10, 8)
     assert state.lift_position == 0
     assert state.lift_passengers == []
     assert len(state.floor_passengers) == 10

@@ -1,73 +1,62 @@
 from dataclasses import dataclass
 from collections import deque
-from random import random, choice
+
+import numpy as np
 
 
 class LiftSim:
-    def __init__(self):
-
+    def __init__(self, n_floors=10, lift_capacity=8, arrival_probability=0.1, rng=None):
         self._state = None
 
-        self.max_lift_position = 10
-        self.min_lift_position = 0
-        self.floor_probabilities = [
-            0.1 for n in range(self.max_lift_position - self.min_lift_position)
-        ]
-        self.lift_capacity = 8
+        self.n_floors = n_floors
+        self.floor_probabilities = [arrival_probability for _ in range(n_floors)]
+        self.lift_capacity = lift_capacity
+        self.rng = rng if rng is not None else np.random.default_rng()
 
         self.reset()
 
     def reset(self):
-        self._state = LiftState(
-            self.max_lift_position - self.min_lift_position, self.lift_capacity
-        )
-        self._state.lift_position = self.min_lift_position
+        self._state = LiftState(self.n_floors, self.lift_capacity)
 
     def state(self):
         return self._state
 
     def move_up(self):
-        if self._state.lift_position < self.max_lift_position - 1:
+        if self._state.lift_position < self.n_floors - 1:
             self._state.lift_position += 1
 
     def move_down(self):
-        if self._state.lift_position > self.min_lift_position:
+        if self._state.lift_position > 0:
             self._state.lift_position -= 1
 
     def serve_floor(self):
         n_passengers_served = 0
         n_passengers_who_got_on = 0
+        position = self._state.lift_position
 
         # Remove passengers for this floor
         temp = []
         for passenger in self._state.lift_passengers:
-            if passenger.destination == self._state.lift_position:
+            if passenger.destination == position:
                 n_passengers_served += 1
-                # print("passenger got off")
             else:
                 temp.append(passenger)
         self._state.lift_passengers = temp
 
-        # Add passengers to lift
-        for n in range(self.lift_capacity - len(self._state.lift_passengers)):
-            if len(self._state.floor_passengers[self._state.lift_position]) != 0:
-                self._state.lift_passengers.append(
-                    self._state.floor_passengers[self._state.lift_position].pop()
-                )
-                n_passengers_who_got_on += 1
-                # print("passenger got on")
+        # Add passengers to lift, first to arrive first, until the lift is full
+        waiting = self._state.floor_passengers[position]
+        while waiting and len(self._state.lift_passengers) < self.lift_capacity:
+            self._state.lift_passengers.append(waiting.popleft())
+            n_passengers_who_got_on += 1
         return n_passengers_served, n_passengers_who_got_on
 
     def sample_passengers(self):
-        for floor in range(self.max_lift_position - self.min_lift_position):
-            if random() < self.floor_probabilities[floor]:
-                destination = choice(
-                    [
-                        n
-                        for n in range(self.max_lift_position - self.min_lift_position)
-                        if n != floor
-                    ]
-                )
+        for floor in range(self.n_floors):
+            if self.rng.random() < self.floor_probabilities[floor]:
+                # Uniform over every floor except this one
+                destination = int(self.rng.integers(self.n_floors - 1))
+                if destination >= floor:
+                    destination += 1
                 self._state.floor_passengers[floor].append(
                     Passenger(floor, destination)
                 )
@@ -88,19 +77,18 @@ class LiftState:
     floor_passengers: list[deque[Passenger]]
     lift_position: int = 0
 
-    def __init__(self, floors, max_persons):
-        self.max_persons = max_persons
+    def __init__(self, floors, capacity=8):
+        self.capacity = capacity
+        self.lift_position = 0
         self.lift_passengers = []
-        self.floor_passengers = []
-        for floor in range(floors):
-            self.floor_passengers.append(deque())
+        self.floor_passengers = [deque() for _ in range(floors)]
 
     def __repr__(self):
         total_string = ""
         lift_string = "[ "
         for passenger in self.lift_passengers:
             lift_string += f"{passenger.destination} "
-        for _ in range(self.max_persons - len(self.lift_passengers)):
+        for _ in range(self.capacity - len(self.lift_passengers)):
             lift_string += "  "
         lift_string += "] "
         for floor in range(len(self.floor_passengers) - 1, -1, -1):
@@ -108,8 +96,7 @@ class LiftState:
             if self.lift_position == floor:
                 string += lift_string
             else:
-                for n in range(len(lift_string)):
-                    string += " "
+                string += " " * len(lift_string)
             string += " | "
 
             for passenger in reversed(self.floor_passengers[floor]):

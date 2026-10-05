@@ -6,7 +6,7 @@ import psutil
 process = psutil.Process(os.getpid())
 
 
-env = LiftEnv(reward_shaping=True, multi_discrete=True)
+env = LiftEnv(reward_shaping=True, obs_type="multi_discrete")
 obs, info = env.reset(seed=0)
 
 for chunk in range(20):

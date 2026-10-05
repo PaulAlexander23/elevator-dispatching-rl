@@ -5,7 +5,7 @@ from sim import LiftState
 
 
 def test_env_is_gym():
-    env = LiftEnv(multi_discrete=True)
+    env = LiftEnv(obs_type="multi_discrete")
 
     assert isinstance(env, Env)
     check_env(env)
@@ -29,11 +29,12 @@ def test_env_random_agent_reward():
     action_space = env.action_space
     env.reset()
     total_reward = 0
-    terminated = False
-    while not terminated:
+    done = False
+    while not done:
         action = action_space.sample()
-        _, reward, terminated, _, _ = env.step(action)
+        _, reward, terminated, truncated, _ = env.step(action)
         total_reward += reward
+        done = terminated or truncated
 
     print(total_reward)
 
@@ -53,7 +54,7 @@ def test_obs():
 
 
 def test_obs_mb():
-    env = LiftEnv(multi_binary=True)
+    env = LiftEnv(obs_type="multi_binary")
     env.render_mode = "human"
     env.reset()
     env.render()
@@ -67,7 +68,7 @@ def test_obs_mb():
 
 
 def test_obs_md():
-    env = LiftEnv(multi_discrete=True)
+    env = LiftEnv(obs_type="multi_discrete")
     env.render_mode = "human"
     env.reset()
     env.render()

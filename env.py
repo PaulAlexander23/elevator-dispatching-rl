@@ -1,67 +1,71 @@
-from gymnasium import Env, spaces
-import numpy as np
-from sim import LiftSim
 from time import sleep
-import random
+
+import numpy as np
+from gymnasium import Env, spaces
+
+from sim import LiftSim
+
+OBS_TYPES = ("box", "multi_binary", "multi_discrete", "custom")
 
 
 class LiftEnv(Env):
-    def __init__(
-        self,
-        render_mode="none",
-        reward_shaping=False,
-        multi_binary=False,
-        multi_discrete=False,
-        custom_obs=False,
-    ):
-        super().__init__()
-        self.metadata = {"render_modes": ["human", "none"], "render_fps": 1}
-        self.render_mode = render_mode
-        self.action_space = spaces.Discrete(3)
-        self.multi_binary = False
-        self.multi_discrete = False
-        self.custom_obs = False
-        if custom_obs:
-            self.custom_obs = True
-            obs = 9 * np.ones(22).squeeze()
-            obs[0] = 10
-            self.observation_space = spaces.MultiDiscrete(obs)
-        elif multi_discrete:
-            self.multi_discrete = True
-            self.observation_space = spaces.MultiDiscrete(9 * np.ones(30).squeeze())
-        elif multi_binary:
-            self.multi_binary = True
-            self.observation_space = spaces.MultiBinary([3, 10])
-        else:
-            self.observation_space = spaces.Box(0, 1, shape=(21,))
-        self.spec = None
-        self.sim = LiftSim()
-        self.steps = 0
-        self.max_steps = 200
-        self.reward_shaping = reward_shaping
+    """Single-lift dispatching environment.
 
-    def reset(
-        self,
-        seed=None,
-        options=None,
-    ):
+    Actions: 0 = move up, 1 = move down, 2 = serve the current floor.
+
+    Observation types (``obs_type``):
+    - "box": lift position scaled to [0, 1], then one flag per floor for
+      "someone is waiting here" and one per floor for "someone in the lift
+      wants this floor".
+    - "multi_binary": 3 x n_floors flags: lift position (one-hot), waiting,
+      wanted.
+    - "multi_discrete": 3 x n_floors counts: lift position (0 = lift not here,
+      k = lift here with k - 1 passengers), waiting (capped), wanted.
+    - "custom": lift position, passengers in lift, waiting per floor (capped),
+      wanted per floor.
+    """
+
+    metadata = {"render_modes": ["human"], "render_fps": 1}
+
+    def __init__(self, render_mode=None, reward_shaping=False, obs_type="box", max_steps=200):
+        super().__init__()
+        if obs_type not in OBS_TYPES:
+            raise ValueError(f"obs_type must be one of {OBS_TYPES}, got {obs_type!r}")
+        self.render_mode = render_mode
+        self.obs_type = obs_type
+        self.reward_shaping = reward_shaping
+        self.max_steps = max_steps
+        self.steps = 0
+
+        self.sim = LiftSim()
+        n_floors = self.sim.n_floors
+        capacity = self.sim.lift_capacity
+        self.action_space = spaces.Discrete(3)
+        if obs_type == "custom":
+            nvec = np.full(2 + 2 * n_floors, capacity + 1)
+            nvec[0] = n_floors
+            self.observation_space = spaces.MultiDiscrete(nvec)
+        elif obs_type == "multi_discrete":
+            nvec = np.full(3 * n_floors, capacity + 1)
+            nvec[:n_floors] = capacity + 2
+            self.observation_space = spaces.MultiDiscrete(nvec)
+        elif obs_type == "multi_binary":
+            self.observation_space = spaces.MultiBinary([3, n_floors])
+        else:
+            self.observation_space = spaces.Box(0, 1, shape=(1 + 2 * n_floors,))
+
+    def reset(self, seed=None, options=None):
         super().reset(seed=seed, options=options)
-        random.seed(seed)
+        self.sim.rng = self.np_random
 
         self.steps = 0
         self.sim.reset()
-
-        state = self.sim.state()
-        for n in range(10):
+        for _ in range(10):
             self.sim.sample_passengers()
 
-        obs = self._map_state_to_obs(state)
-        info = {}
-
-        return obs, info
+        return self._map_state_to_obs(self.sim.state()), {}
 
     def step(self, action):
-        previous_state = self.sim.state()
         n_passengers_served = 0
         n_passengers_who_got_on = 0
         self.sim.sample_passengers()
@@ -72,115 +76,49 @@ class LiftEnv(Env):
         else:
             n_passengers_served, n_passengers_who_got_on = self.sim.serve_floor()
 
-        state = self.sim.state()
-
-        obs = self._map_state_to_obs(state)
+        obs = self._map_state_to_obs(self.sim.state())
 
         # Reward for serving passengers
         reward = n_passengers_served
-        r1 = n_passengers_served
 
         if self.reward_shaping:
             # Reward for picking up passengers
             reward += n_passengers_who_got_on
-            r2 = n_passengers_who_got_on
-
-            # Reward for moving towards
-
-            # Punish for moving up/down out of bounds
-            # if (action == 0 or action == 1) and state.lift_position == previous_state.lift_position:
-            #     reward -= 0.5
 
             # Punish for serving the floor when not needed
-            r3 = 0
-            if (
-                action == 2
-                and n_passengers_served == 0
-                and n_passengers_who_got_on == 0
-            ):
+            if action == 2 and n_passengers_served == 0 and n_passengers_who_got_on == 0:
                 reward -= 0.5
-                r3 -= 0.5
 
-                # print(f"{r1}, {r2}, {r3}")
-
+        # The task never ends on its own; episodes are cut off by a time limit.
+        self.steps += 1
         terminated = False
-        truncated = False
-        if self.steps >= self.max_steps:
-            terminated = True
-        # truncated = True
-        else:
-            self.steps += 1
-        info = {}
-        return obs, reward, terminated, truncated, info
+        truncated = self.steps >= self.max_steps
+        return obs, reward, terminated, truncated, {}
 
     def _map_state_to_obs(self, state):
-        if self.custom_obs:
-            lift_position = [state.lift_position, len(state.lift_passengers)]
+        capacity = self.sim.lift_capacity
+        n_floors = len(state.floor_passengers)
+        waiting = [len(queue) for queue in state.floor_passengers]
+        wanted = [0] * n_floors
+        for passenger in state.lift_passengers:
+            wanted[passenger.destination] += 1
 
-            lift_wanted = [
-                min(len(state.floor_passengers[floor]), 8)
-                for floor in range(len(state.floor_passengers))
-            ]
-
-            floor_wanted = []
-            for floor in range(len(state.floor_passengers)):
-                is_floor_wanted = 0
-                for passenger in state.lift_passengers:
-                    if passenger.destination == floor:
-                        is_floor_wanted += 1
-                floor_wanted.append(is_floor_wanted)
-
-            np_obs = np.array(lift_position + lift_wanted + floor_wanted, np.integer)
-        elif self.multi_discrete:
-            lift_position = [
-                0 if n != state.lift_position else len(state.lift_passengers)
-                for n in range(10)
-            ]
-
-            lift_wanted = [
-                min(len(state.floor_passengers[floor]), 8)
-                for floor in range(len(state.floor_passengers))
-            ]
-
-            floor_wanted = []
-            for floor in range(len(state.floor_passengers)):
-                is_floor_wanted = 0
-                for passenger in state.lift_passengers:
-                    if passenger.destination == floor:
-                        is_floor_wanted += 1
-                floor_wanted.append(is_floor_wanted)
-
-            np_obs = np.array(lift_position + lift_wanted + floor_wanted, np.integer)
-        elif self.multi_binary:
-            lift_position = [0 if n != state.lift_position else 1 for n in range(10)]
-
-            lift_wanted = [
-                len(state.floor_passengers[floor]) > 0
-                for floor in range(len(state.floor_passengers))
-            ]
-
-            floor_wanted = []
-            for floor in range(len(state.floor_passengers)):
-                is_floor_wanted = False
-                for passenger in state.lift_passengers:
-                    if passenger.destination == floor:
-                        is_floor_wanted = True
-                floor_wanted.append(is_floor_wanted)
-
-            np_obs = np.array([lift_position, lift_wanted, floor_wanted], np.int8)
-        else:
-            obs = [state.lift_position / 9]
-            for floor in range(len(state.floor_passengers)):
-                obs.append(len(state.floor_passengers[floor]) > 0)
-            for floor in range(len(state.floor_passengers)):
-                is_floor_wanted = False
-                for passenger in state.lift_passengers:
-                    if passenger.destination == floor:
-                        is_floor_wanted = True
-                obs.append(is_floor_wanted)
-            np_obs = np.array(obs, dtype=np.float32)
-
-        return np_obs
+        if self.obs_type == "custom":
+            obs = [state.lift_position, len(state.lift_passengers)]
+            obs += [min(n, capacity) for n in waiting] + wanted
+            return np.array(obs, dtype=np.int64)
+        if self.obs_type == "multi_discrete":
+            position = [0] * n_floors
+            position[state.lift_position] = 1 + len(state.lift_passengers)
+            obs = position + [min(n, capacity) for n in waiting] + wanted
+            return np.array(obs, dtype=np.int64)
+        if self.obs_type == "multi_binary":
+            position = [int(floor == state.lift_position) for floor in range(n_floors)]
+            obs = [position, [n > 0 for n in waiting], [n > 0 for n in wanted]]
+            return np.array(obs, dtype=np.int8)
+        obs = [state.lift_position / (n_floors - 1)]
+        obs += [n > 0 for n in waiting] + [n > 0 for n in wanted]
+        return np.array(obs, dtype=np.float32)
 
     def render(self):
         if self.render_mode == "human":

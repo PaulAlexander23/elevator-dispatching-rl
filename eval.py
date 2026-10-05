@@ -19,7 +19,7 @@ mean_reward, std_reward = evaluate_policy(
 print(f"mean reward: {mean_reward}, std reward: {std_reward}")
 
 model = PPO.load("binary_obs_model.zip")
-eval_envs = DummyVecEnv([lambda: Monitor(LiftEnv("human", multi_binary=True))])
+eval_envs = DummyVecEnv([lambda: Monitor(LiftEnv("human", obs_type="multi_binary"))])
 if RENDER:
     evaluate_policy(model, eval_envs, render=True,
                     n_eval_episodes=1, deterministic=False)
@@ -32,7 +32,7 @@ print(f"mean reward: {mean_reward}, std reward: {std_reward}")
 
 model = PPO.load("dis_obs_model.zip")
 eval_envs = DummyVecEnv(
-    [lambda: Monitor(LiftEnv("human", multi_discrete=True))])
+    [lambda: Monitor(LiftEnv("human", obs_type="multi_discrete"))])
 if RENDER:
     evaluate_policy(model, eval_envs, render=True,
                     n_eval_episodes=1, deterministic=False)
@@ -45,7 +45,7 @@ print(f"mean reward: {mean_reward}, std reward: {std_reward}")
 
 model = PPO.load("model.zip")
 eval_envs = DummyVecEnv(
-    [lambda: Monitor(LiftEnv("human", custom_obs=True))])
+    [lambda: Monitor(LiftEnv("human", obs_type="custom"))])
 if RENDER:
     evaluate_policy(model, eval_envs, render=True,
                     n_eval_episodes=1, deterministic=False)

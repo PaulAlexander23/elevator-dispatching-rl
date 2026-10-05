@@ -9,7 +9,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv
 process = psutil.Process(os.getpid())
 
 envs = DummyVecEnv(
-    [lambda: LiftEnv(multi_discrete=True)])
+    [lambda: LiftEnv(obs_type="multi_discrete")])
 
 model = PPO("MlpPolicy", envs, device="cpu", verbose=1)
 for chunk in range(20):

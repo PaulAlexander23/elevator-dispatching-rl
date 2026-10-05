@@ -15,9 +15,9 @@ def main(
 ):
     envs = DummyVecEnv(
         [lambda: LiftEnv(
-            reward_shaping=True, multi_binary=False, multi_discrete=False, custom_obs=True)])
+            reward_shaping=True, obs_type="custom")])
     eval_envs = DummyVecEnv(
-        [lambda: Monitor(LiftEnv(multi_binary=False, multi_discrete=False, custom_obs=True))])
+        [lambda: Monitor(LiftEnv(obs_type="custom"))])
     model = PPO("MlpPolicy", envs, device="cpu", verbose=1, n_epochs=3,
                 n_steps=n_steps)
     # policy_kwargs={"net_arch":{"pi":[64],"vf":[64]
