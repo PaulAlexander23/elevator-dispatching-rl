@@ -18,8 +18,7 @@ def main():
     for chunk in range(20):
         t0 = time.perf_counter()
 
-        model.learn(total_timesteps=100_000, log_interval=10,
-                    reset_num_timesteps=False)
+        model.learn(total_timesteps=100_000, log_interval=10, reset_num_timesteps=False)
 
         dt = time.perf_counter() - t0
 

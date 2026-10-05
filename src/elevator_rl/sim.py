@@ -1,5 +1,5 @@
-from dataclasses import dataclass
 from collections import deque
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -57,9 +57,7 @@ class LiftSim:
                 destination = int(self.rng.integers(self.n_floors - 1))
                 if destination >= floor:
                     destination += 1
-                self._state.floor_passengers[floor].append(
-                    Passenger(floor, destination)
-                )
+                self._state.floor_passengers[floor].append(Passenger(floor, destination))
 
     def render(self):
         print(self.state())

@@ -74,9 +74,7 @@ def test_serve_floor_drops_off_and_picks_up():
 def test_serve_floor_boards_first_come_first_served():
     sim = make_sim(lift_capacity=2)
     state = sim.state()
-    state.floor_passengers[0] = deque(
-        [Passenger(0, 1), Passenger(0, 2), Passenger(0, 3)]
-    )
+    state.floor_passengers[0] = deque([Passenger(0, 1), Passenger(0, 2), Passenger(0, 3)])
 
     served, boarded = sim.serve_floor()
 

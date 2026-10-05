@@ -50,10 +50,8 @@ class UpDownPolicy:
 def main():
     eval_envs = DummyVecEnv([lambda: Monitor(LiftEnv("human"))])
     for policy in (RandomPolicy(), UpDownPolicy()):
-        mean_reward, std_reward = evaluate_policy(
-            policy, eval_envs, n_eval_episodes=1000)
-        print(f"{type(policy).__name__}: "
-              f"mean reward: {mean_reward}, std reward: {std_reward}")
+        mean_reward, std_reward = evaluate_policy(policy, eval_envs, n_eval_episodes=1000)
+        print(f"{type(policy).__name__}: mean reward: {mean_reward}, std reward: {std_reward}")
 
 
 if __name__ == "__main__":

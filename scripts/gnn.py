@@ -1,11 +1,13 @@
 """Experimental: converting lift states to graphs for a GNN policy. Needs the `gnn` extra."""
 
-import torch
-from torch_geometric.data import Data
 import time
-from elevator_rl.sim import LiftState, LiftSim
+
+import torch
 from torch.nn import Linear, ReLU
-from torch_geometric.nn import Sequential, GCNConv
+from torch_geometric.data import Data
+from torch_geometric.nn import GCNConv, Sequential
+
+from elevator_rl.sim import LiftSim, LiftState
 
 
 def convert(state: LiftState) -> Data:
@@ -39,7 +41,7 @@ def simple_graph():
 
 if __name__ == "__main__":
     sim = LiftSim()
-    for n in range(100):
+    for _ in range(100):
         sim.sample_passengers()
 
     t0 = time.perf_counter()

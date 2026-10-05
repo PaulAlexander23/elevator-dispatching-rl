@@ -19,7 +19,7 @@ gnn = ["torch-geometric>=2.8.0.post1"]
 bench = ["psutil>=5.9"]
 
 [dependency-groups]
-dev = ["pytest>=9.1.1"]
+dev = ["pytest>=9.1.1", "ruff>=0.6"]
 
 [build-system]
 requires = ["hatchling"]
@@ -37,3 +37,10 @@ required-environments = [
 testpaths = ["tests"]
 addopts = "-m 'not slow'"
 markers = ["slow: long-running training tests (deselected by default; run with -m slow)"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
