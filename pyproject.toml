@@ -1,18 +1,18 @@
 [project]
-name = "lift-rl"
+name = "elevator-dispatching-rl2"
 version = "0.1.0"
-authors = [
-  { name="Paul Alexander", email="paulalexander23@live.co.uk" },
-]
-description = "Reinforcement learning of a lift controller."
+description = "Add your description here"
 readme = "README.md"
-license = "MIT"
-license-files = ["LICEN[CS]E*"]
-
-requires-python = ">=3.8"
-dependecies = [
-    "gymnasiumn",
-    "stable-baselines3",
-    "pytest",
+requires-python = ">=3.11"
+dependencies = [
+    "gymnasium>=1.0.0",
+    "pytest>=9.1.1",
+    "stable-baselines3>=2.4.1",
+    "torch>=2.2.2",
+    "torch-geometric>=2.8.0.post1",
 ]
 
+[tool.uv]
+required-environments = [
+ "sys_platform == 'darwin' and platform_machine == 'x86_64'"
+]

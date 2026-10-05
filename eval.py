@@ -45,7 +45,7 @@ print(f"mean reward: {mean_reward}, std reward: {std_reward}")
 
 model = PPO.load("model.zip")
 eval_envs = DummyVecEnv(
-    [lambda: Monitor(LiftEnv("human", multi_discrete=True))])
+    [lambda: Monitor(LiftEnv("human", custom_obs=True))])
 if RENDER:
     evaluate_policy(model, eval_envs, render=True,
                     n_eval_episodes=1, deterministic=False)

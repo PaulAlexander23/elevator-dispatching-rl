@@ -9,9 +9,9 @@ from stable_baselines3.common.monitor import Monitor
 def main():
     envs = DummyVecEnv(
         [lambda: LiftEnv(
-            reward_shaping=True, multi_binary=False, multi_discrete=True)])
+            reward_shaping=True, multi_binary=False, multi_discrete=False, custom_obs=True)])
     eval_envs = DummyVecEnv(
-        [lambda: Monitor(LiftEnv(multi_binary=False, multi_discrete=True))])
+        [lambda: Monitor(LiftEnv(multi_binary=False, multi_discrete=False, custom_obs=True))])
     model = PPO("MlpPolicy", envs, device="cpu", verbose=1, n_epochs=3)
     # policy_kwargs={"net_arch":{"pi":[64],"vf":[64]
     # }}
