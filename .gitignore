@@ -5,3 +5,6 @@ __pycache__
 tags
 *.zip
 logs/
+
+# C++ build output
+cpp/build/

@@ -152,8 +152,12 @@ class BuildingSim:
 
     def sample_passengers(self, episode_fraction=0.0):
         """Add this step's arrivals. `episode_fraction` drives the "day" profile."""
+        self.add_arrivals(self.draw_arrivals(episode_fraction))
+
+    def draw_arrivals(self, episode_fraction=0.0):
+        """This step's arrivals as (floor, destination) pairs, in queueing order."""
         c = self.config
-        queues = self._state.floor_queues
+        arrivals = []
         if c.traffic == "uniform":
             # The same draws, in the same order, as LiftSim.sample_passengers.
             for floor in range(c.n_floors):
@@ -161,15 +165,21 @@ class BuildingSim:
                     destination = int(self.rng.integers(c.n_floors - 1))
                     if destination >= floor:
                         destination += 1
-                    queues[floor].append(destination)
-            return
+                    arrivals.append((floor, destination))
+            return arrivals
 
         # Poisson counts, since a busy lobby can see several arrivals a step.
         rates, destinations = self.arrival_model(episode_fraction)
         counts = self.rng.poisson(rates)
         for floor in np.flatnonzero(counts):
             chosen = self.rng.choice(c.n_floors, size=counts[floor], p=destinations[floor])
-            queues[floor].extend(int(d) for d in chosen)
+            arrivals.extend((int(floor), int(d)) for d in chosen)
+        return arrivals
+
+    def add_arrivals(self, arrivals):
+        queues = self._state.floor_queues
+        for floor, destination in arrivals:
+            queues[floor].append(destination)
 
     def arrival_model(self, episode_fraction=0.0):
         """Expected arrivals per floor this step, and each floor's destination distribution."""

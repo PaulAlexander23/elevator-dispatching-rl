@@ -57,12 +57,18 @@ uv run ruff check .
 uv run ruff format .
 ```
 
+The C++ parity tests in `tests/test_cpp.py` are skipped until the C++ port is
+built (see below).
+
 ## Layout
 
 ```
 src/elevator_rl/   sim.py (simulator), env.py (Gymnasium env), train.py (PPO training),
                    baselines.py (hand-written policies), benchmark.py (obs-space comparison),
-                   building.py + building_env.py (configurable multi-lift env)
+                   building.py + building_env.py (configurable multi-lift env),
+                   sweep.py + compare.py (PPO throughput and learning comparisons),
+                   trace.py (trajectories for the C++ parity check)
+cpp/               C++ port of the multi-lift env, with replay, benchmark and tests
 tests/             pytest suite
 scripts/           evaluation, baselines, benchmarks and GNN experiments
 ```
@@ -143,6 +149,28 @@ gradient update:
 uv run python -m elevator_rl.sweep --preset full --n-envs 1 4 16 64 \
     --batch-sizes 64 512 --vec-envs dummy subproc --repeats 2
 ```
+
+## C++ port
+
+`cpp/` is a C++17 port of `BuildingSim` and `BuildingEnv` with fixed-size
+state (no allocation per step) and its own random number generator. It
+reproduces the Python dynamics exactly when given the same arrivals:
+`elevator_rl.trace` records Python trajectories with their arrivals, and
+`elevator_replay` checks every observation, reward and truncation flag.
+Random draws differ from NumPy's, so the random-policy statistics are
+compared instead.
+
+```sh
+cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release
+cmake --build cpp/build
+ctest --test-dir cpp/build                         # C++ unit tests
+uv run pytest tests/test_cpp.py                    # parity with Python
+cpp/build/elevator_bench --preset full --steps 2000000
+```
+
+Each floor queue holds at most 512 passengers (the longest seen in Python is
+about 310); extra arrivals are dropped and counted, and the parity tests
+check that none are.
 
 ## License
 
