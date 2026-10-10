@@ -22,6 +22,7 @@ backend.
 |---|---|---|
 | Python env | `src/elevator_rl/building.py`, `building_env.py` | about 6.5k env steps/s |
 | C++ port | `cpp/`, `src/elevator_rl/cpp_env.py` | about 0.5M env steps/s, 1 thread |
+| C++ as a C library | `cpp/capi/`, `src/elevator_rl/ctypes_env.py` | the same as the C++ port (ctypes) |
 | EnvPool | `cpp/envpool/`, `scripts/build_envpool.sh`, `src/elevator_rl/envpool_env.py` | up to 1.5M env steps/s, 16 threads |
 | JAX env | `src/elevator_rl/jax_env.py` | about 0.68M env steps/s on the GPU |
 | Warp env | `src/elevator_rl/warp_env.py` | about 3.9M env steps/s on the GPU |

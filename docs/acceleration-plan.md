@@ -280,6 +280,75 @@ _Source: `elevator_rl.sweep`, rollout 4,096 (8,192 for 256+ envs), 40,000–50,0
 
 Reproduce with `uv run python -m elevator_rl.sweep --preset full --obs-type relative --net-arch 256 256 --vec-envs dummy cpp --n-envs 64 256 1024 --batch-sizes 2048 --rollout 8192 --devices cuda`. GPU runs need a CUDA build of torch (2.14.1+cu126 supports the GTX 1080), but the lockfile pins the CPU build. `train.py --device cuda` trains on the GPU.
 
+### Phase 2 alternative: a C library through ctypes
+
+The env also works as a plain shared library with a flat `extern "C"` API, loaded with `ctypes`. It gives identical trajectories and the same training speed as the nanobind module: 22,837 vs 22,615 PPO steps/s at the most env-heavy CPU setting. A raw batch step through ctypes is even 0.5 µs cheaper than through nanobind, but only when the pointers are built once. Built naively, a ctypes call costs 4–11× more.
+
+What was built (branch `ctypes-dll`):
+
+- `cpp/capi/elevator_c.h`: 12 functions over `elevator::VecEnv`, using only fixed-width integers, doubles, pointers and one plain struct (`ElevatorOptions`).
+    - The env is an opaque handle, created and destroyed by the library.
+    - Every function returns a status code. `elevator_last_error()` gives the message, kept per thread.
+    - `elevator_abi_version()` and `elevator_options_size()` let a binding check that it matches the library.
+- `libelevator_c.so` (`elevator_c.dll` on Windows), a CMake target built next to the nanobind module. It needs no Python headers and exports only the 12 API symbols.
+- `ctypes_env.py`: `CtypesVecEnv` subclasses `CppVecEnv`, so it has the same SB3 interface. Only the two batch calls go through ctypes. It is available as `--vec-env ctypes` in `train`, `compare` and `sweep`.
+- `tests/test_ctypes_env.py` (17 tests): step-for-step parity with `CppVecEnv` on 3 presets × 3 observation and action modes, across auto-resets and reseeding. Other tests cover out-of-range actions, bad configs, NULL handles, per-thread errors, freeing the handle, and a PPO run.
+- `scripts/time_ctypes.py`: the call-overhead and stepping benchmarks below.
+
+**A ctypes step is cheapest with cached pointers, and 4–11× dearer than nanobind without.** µs per batch step call, 1 env, preset original, best of 5 × 200,000 calls. A bare ctypes call costs 0.25 µs; a nanobind getter 0.06 µs.
+
+| Route | µs per call | vs nanobind |
+|---|---:|---:|
+| ctypes, cached pointers, GIL held (`PyDLL`) | 0.855 | 0.6× |
+| **ctypes, cached pointers (`CtypesVecEnv`)** | **0.934** | **0.6×** |
+| nanobind (`CppVecEnv`) | 1.495 | 1.0× |
+| ctypes, `array.ctypes.data` per call | 6.382 | 4.3× |
+| ctypes, `ndpointer` argtypes | 16.551 | 11.1× |
+
+_Source: `scripts/time_ctypes.py`, raw batch step calls, preset original, relative obs, Ryzen 7 3700X._
+
+The same ranking holds on `full` (2.67 µs for nanobind, 2.17 µs cached), where the step itself is about 1.7 µs more expensive.
+
+In training, the route makes no difference: env stepping is 1–7% of PPO time, and the calls are the same size either way.
+
+| PPO setting (`full`, relative obs, 256×256 MLP) | nanobind | ctypes |
+|---|---:|---:|
+| 64 envs, minibatch 64, 1 CPU thread (the recipe) | 2,944 ± 17 | 2,940 ± 25 |
+| 64 envs, minibatch 512, 1 CPU thread | 5,633 ± 22 | 5,633 ± 7 |
+| 1024 envs, minibatch 2048, 8 CPU threads | 22,615 ± 447 | 22,837 ± 3 |
+
+_Source: `elevator_rl.sweep --vec-envs cpp ctypes`, PPO steps/s, 40,000–50,000 timed steps × 2 seeds. The GPU setting was not rerun: the venv has the CPU build of torch, and installing the `cuda` group would remove the EnvPool wheel._
+
+Through SB3's `VecEnv.step`, which adds the infos and the copies, the two are within noise at every batch size. ctypes was 1.09–1.11× nanobind at 1 env and 0.98–1.03× at 256 and 1024. At 64 envs it swung from 0.82× to 1.22× between repeats.
+
+What we learned:
+
+- **The cost is in converting the arguments, not in the call.** A bare ctypes call costs 0.25 µs, against 0.06 µs for a nanobind getter. Passing arrays is what gets expensive: `array.ctypes.data` builds a helper object per array (about 0.8 µs each), and `ndpointer` argtypes check each array in Python (about 2.2 µs each).
+- **Caching the pointers is what makes ctypes fast.** It works only because the buffers never move. `CppVecEnv` now allocates them once and copies each step's actions into a fixed array, and the code says not to rebind them.
+- **nanobind is slower here because it checks more.** It validates the shape and dtype of all 7 arrays on every call. ctypes with raw pointers checks nothing, so a wrong dtype is silent memory corruption, not an error. The library checks what it can: NULL pointers and the action range.
+- **Releasing the GIL is nearly free.** `ctypes.CDLL` releases it on every call, as the nanobind binding does. Keeping it (`ctypes.PyDLL`) saves only 0.07–0.08 µs.
+- **Hidden visibility didn't hide everything.** `-fvisibility=hidden` applies only to the target's own sources, so about 60 internal C++ symbols from the static `elevator` library were exported too. Linking with `--exclude-libs,ALL` cut the exports to the 12 API functions.
+
+#### Pitfalls of the C library route
+
+Most of what nanobind does for you, a C API makes you do by hand, and mistakes crash or corrupt memory rather than raise. Only the Linux build was run; the Windows rows are applied in the code but untested.
+
+| Area | Pitfall | What goes wrong | What this repo does |
+|---|---|---|---|
+| Calling convention | `__cdecl` vs `__stdcall` | On 32-bit Windows, the wrong one (`CDLL` vs `WinDLL`) unbalances the stack. x86-64 has a single convention per OS, so it is moot there. | `ELEVATOR_CALL` is `__cdecl` on Windows; Python loads with `CDLL` |
+| Calling convention | Undeclared signatures | ctypes assumes `int` for every argument and return. The 64-bit handle comes back truncated to 32 bits and crashes later, far from the cause. | `argtypes` and `restype` for all 12 functions; `c_void_p` for the handle |
+| Calling convention | Struct layout and ABI drift | The `ctypes.Structure` must match field order, types and padding. A changed header that the binding doesn't follow is misread silently. | `static_assert` of no padding; the ABI version and `sizeof(ElevatorOptions)` are checked at load |
+| Calling convention | Types without a fixed size | `bool`, `enum`, `long` and `size_t` vary by compiler or platform. | `int32_t`, `uint64_t` and `double` only |
+| Memory ownership | Who frees the handle | The library allocates it, so the library must free it. Python's garbage collector can't see it. | `elevator_vec_destroy`, called by a `weakref.finalize` that holds no reference to the env (one would keep it alive forever); `close()` frees it once |
+| Memory ownership | Arrays C points into | The caller owns every array, and C only keeps its address. A NumPy array that is rebound, freed or not contiguous makes C write into freed memory. | Buffers allocated once and never rebound; contiguity asserted when caching pointers; actions copied into a fixed array |
+| Error handling | Exceptions across the boundary | A C++ exception escaping an `extern "C"` function calls `std::terminate`, which kills the Python process. | Every entry point catches everything and returns `ELEVATOR_ERROR` |
+| Error handling | Reporting the error | A C function can only return a code. A global message would be overwritten by other threads. | A `thread_local` message from `elevator_last_error()`; `c_char_p` copies it at once; Python raises `RuntimeError` |
+| Error handling | No type checks | ctypes passes a raw address, so a wrong dtype or shape is garbage, not an error. | The library checks NULLs and the action range, writing nothing on failure; Python fixes dtypes when allocating. `ndpointer` checks cost 17 µs a call. |
+| Windows | `dllexport` | Windows exports nothing by default; Linux exports everything. | `ELEVATOR_API` is `dllexport` while building and `dllimport` for C users; hidden visibility and `--exclude-libs` on Linux |
+| Windows | CRT mismatch | A DLL built with `/MD` needs the matching `vcruntime` on the machine. Each CRT has its own heap, so memory freed in a different CRT corrupts the heap. | Static CRT (`MSVC_RUNTIME_LIBRARY MultiThreaded`); no memory is allocated on one side and freed on the other |
+| Windows | DLL search path | Since Python 3.8, `PATH` is not searched for a DLL's dependencies. | Loaded by full path; with the static CRT it needs only system DLLs |
+| Linux | `libstdc++` version | The `.so` links the system `libstdc++.so.6`. Built with a newer compiler, it fails on older systems (`GLIBCXX_... not found`). | Not handled; `-static-libstdc++` would fix it for distribution |
+
 ## Phase 3: EnvPool
 
 Adopt EnvPool only if Phase 2's batched VecEnv leaves the env as a measurable share of training time. For a 100 ns step, thread-pool dispatch can cost more than the step itself.
@@ -485,7 +554,7 @@ These were recommended along the way and deferred, so Phases 3 and 4 could go ah
 - [ ] **Learner defaults in `train.py`:** set torch threads to the physical core count (8 here, against 1 now), and suggest `--device cuda` when minibatch ≥ 512.
 - [ ] **Replace SB3's per-step overhead.** With a GPU learner, the policy forward pass and SB3 bookkeeping take 28–68% of the time. Done in Phase 4: the JAX PPO removes it (7× at the recipe's settings).
 - [ ] **Reward parity per phase:** run the `benchmark.py` reward table across 3 seeds for each env backend (Python, C++, EnvPool, JAX), as the milestone list asks.
-- [ ] **DLL route (open question in the comments):** a flat `extern "C"` API loaded with `ctypes`, as a comparison with the nanobind module.
+- [x] **DLL route (open question in the comments):** a flat `extern "C"` API loaded with `ctypes`, as a comparison with the nanobind module. Done on branch ctypes-dll: see its result section under Phase 2.
 - [ ] **Packaging:** build the C++ module with scikit-build-core so `uv sync` compiles it, keeping the pure-Python fallback.
 - [ ] **`SubprocVecEnv` memory:** 256 subprocesses ran this 31 GB machine out of memory, because each process loads torch. Either cap it in the sweep or document the limit.
 - [x] **NVIDIA Warp,** the other half of Phase 4. Done: see its result section.

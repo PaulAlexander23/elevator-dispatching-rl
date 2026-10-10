@@ -81,7 +81,6 @@ class CppVecEnv(VecEnv):
         observe_direction=False,
         seed=0,
     ):
-        cpp = _require()
         # The spaces come from a Python env, so the two cannot disagree.
         self._reference = BuildingEnv(
             config,
@@ -92,6 +91,23 @@ class CppVecEnv(VecEnv):
             observe_direction=observe_direction,
         )
         super().__init__(n_envs, self._reference.observation_space, self._reference.action_space)
+        size = self._open(n_envs, obs_type, seed)
+        # Allocated once and written in place by C++: never rebind these, since
+        # CtypesVecEnv holds raw pointers to them.
+        n = n_envs
+        dtype = np.int64 if obs_type == "custom" else np.float32
+        self._actions = np.zeros((n, self._reference.config.n_lifts), np.int64)
+        self._obs = np.zeros((n, size), dtype)
+        self._terminal = np.zeros((n, size), dtype)
+        self._rewards = np.zeros(n, np.float32)
+        self._dones = np.zeros(n, np.uint8)
+        self._returns = np.zeros(n, np.float32)
+        self._lengths = np.zeros(n, np.int32)
+        self._start = time.time()
+
+    def _open(self, n_envs, obs_type, seed):
+        """Creates the C++ batch and returns its observation size."""
+        cpp = _require()
         self._vec = cpp.VecEnv(
             cpp_config(self._reference.config),
             cpp_options(self._reference),
@@ -99,29 +115,12 @@ class CppVecEnv(VecEnv):
             getattr(cpp.ObsType, obs_type),
             seed,
         )
-        n, size = n_envs, self._vec.observation_size
-        dtype = np.int64 if obs_type == "custom" else np.float32
-        self._obs = np.zeros((n, size), dtype)
-        self._terminal = np.zeros((n, size), dtype)
-        self._rewards = np.zeros(n, np.float32)
-        self._dones = np.zeros(n, np.uint8)
-        self._returns = np.zeros(n, np.float32)
-        self._lengths = np.zeros(n, np.int32)
-        self._actions = None
-        self._start = time.time()
+        return self._vec.observation_size
 
-    def reset(self):
-        seeds = np.array([-1 if s is None else s for s in self._seeds], dtype=np.int64)
+    def _reset_batch(self, seeds):
         self._vec.reset(seeds, self._obs)
-        self._reset_seeds()
-        self._reset_options()
-        return self._obs.copy()
 
-    def step_async(self, actions):
-        actions = np.asarray(actions, dtype=np.int64).reshape(self.num_envs, -1)
-        self._actions = np.ascontiguousarray(actions)
-
-    def step_wait(self):
+    def _step_batch(self):
         self._vec.step(
             self._actions,
             self._obs,
@@ -131,6 +130,19 @@ class CppVecEnv(VecEnv):
             self._returns,
             self._lengths,
         )
+
+    def reset(self):
+        seeds = np.array([-1 if s is None else s for s in self._seeds], dtype=np.int64)
+        self._reset_batch(seeds)
+        self._reset_seeds()
+        self._reset_options()
+        return self._obs.copy()
+
+    def step_async(self, actions):
+        self._actions[...] = np.asarray(actions).reshape(self._actions.shape)
+
+    def step_wait(self):
+        self._step_batch()
         dones = self._dones.astype(bool)
         infos = [{} for _ in range(self.num_envs)]
         for i in np.flatnonzero(dones):
