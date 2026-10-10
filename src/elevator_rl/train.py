@@ -119,9 +119,21 @@ def main(
     pretrain=0,
     vec_env="dummy",
     device="cpu",
+    torch_threads=None,
 ):
     """Train PPO and save it. With `pretrain`, first imitate the collective
-    heuristic on that many samples (BuildingEnv presets, step actions only)."""
+    heuristic on that many samples (BuildingEnv presets, step actions only).
+
+    `torch_threads` defaults to PyTorch's own choice, one per physical core.
+    The benchmarks pin it to 1, which is 1.7-3x slower (see docs/acceleration-plan.md).
+    """
+    import torch
+
+    if torch_threads:
+        torch.set_num_threads(torch_threads)
+    print(f"torch threads: {torch.get_num_threads()}, device: {device}")
+    if device == "cpu" and batch_size >= 512 and torch.cuda.is_available():
+        print("hint: minibatches of 512+ train faster on the GPU; try --device cuda")
     reward_shaping = True if preset is None else shaping
     model = make_model(
         obs_type,
@@ -205,6 +217,9 @@ def cli():
     parser.add_argument(
         "--device", default="cpu", help="torch device: cuda pays off with --batch-size 512+"
     )
+    parser.add_argument(
+        "--torch-threads", type=int, help="CPU threads for PyTorch (default: one per core)"
+    )
     args = parser.parse_args()
     main(
         total_timesteps=args.timesteps,
@@ -222,6 +237,7 @@ def cli():
         pretrain=args.pretrain,
         vec_env=args.vec_env,
         device=args.device,
+        torch_threads=args.torch_threads,
     )
 
 

@@ -53,3 +53,16 @@ def test_main_smoke_with_imitation(tmp_path):
         pretrain=400,
     )
     assert save_path.exists()
+
+
+def test_torch_threads(tmp_path, capsys):
+    import torch
+
+    before = torch.get_num_threads()
+    try:
+        main(total_timesteps=64, eval_freq=64, n_eval_episodes=1, save_path=tmp_path / "m.zip",
+             n_steps=64, torch_threads=2)  # fmt: skip
+        assert torch.get_num_threads() == 2
+        assert "torch threads: 2" in capsys.readouterr().out
+    finally:
+        torch.set_num_threads(before)
