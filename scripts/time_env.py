@@ -1,16 +1,23 @@
 """Benchmark raw environment throughput. Needs the `bench` extra."""
 
+import argparse
 import os
 import time
 
 import psutil
 
-from elevator_rl.env import LiftEnv
+from elevator_rl.building import PRESETS
+from elevator_rl.train import make_env
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--preset", choices=PRESETS, help="time a BuildingEnv preset instead")
+    args = parser.parse_args()
+    # BuildingEnv has no multi_discrete obs; custom is its closest equivalent.
+    obs_type = "custom" if args.preset else "multi_discrete"
     process = psutil.Process(os.getpid())
-    env = LiftEnv(reward_shaping=True, obs_type="multi_discrete")
+    env = make_env(obs_type, reward_shaping=True, preset=args.preset)
     obs, info = env.reset(seed=0)
 
     for chunk in range(20):

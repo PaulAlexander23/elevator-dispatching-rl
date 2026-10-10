@@ -11,17 +11,28 @@ dependencies = [
     "gymnasium>=1.0.0",
     "numpy>=1.26",
     "stable-baselines3>=2.4.1",
-    "torch>=2.2.2",
 ]
 
+# torch comes from the CPU index by default (the `cpu` group). For a GPU:
+#   uv sync --no-group cpu --group cuda
+# CUDA 12.6 wheels are the newest that still run on Pascal GPUs (GTX 10xx);
+# macOS has no CUDA, so there the cuda group falls back to the CPU wheels.
 [[tool.uv.index]]
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
 [tool.uv.sources]
+warp-lang = { url = "https://github.com/NVIDIA/warp/releases/download/v1.18.0/warp_lang-1.18.0+cu12-py3-none-manylinux_2_28_x86_64.whl" }
 torch = [
-  { index = "pytorch-cpu" },
+  { index = "pytorch-cpu", group = "cpu" },
+  { index = "pytorch-cu126", group = "cuda", marker = "sys_platform != 'darwin'" },
+  { index = "pytorch-cpu", group = "cuda", marker = "sys_platform == 'darwin'" },
 ]
 
 [project.optional-dependencies]
@@ -29,7 +40,30 @@ gnn = ["torch-geometric>=2.8.0.post1"]
 bench = ["psutil>=5.9"]
 
 [dependency-groups]
-dev = ["pytest>=9.1.1", "ruff>=0.6"]
+cpu = ["torch>=2.2.2"]
+cuda = ["torch>=2.2.2"]
+# The JAX port (jax_env, jax_ppo). jax-cuda adds the CUDA 12 plugin. JAX no
+# longer ships wheels for Intel Macs.
+jax = [
+    "jax>=0.6 ; sys_platform != 'darwin' or platform_machine == 'arm64'",
+    "optax>=0.2.4 ; sys_platform != 'darwin' or platform_machine == 'arm64'",
+]
+jax-cuda = [
+    { include-group = "jax" },
+    "jax[cuda12]>=0.6 ; sys_platform == 'linux'",
+]
+# NVIDIA Warp (warp_env), run through JAX. PyPI's warp-lang is built with CUDA
+# 13, which dropped Pascal (GTX 10xx) GPUs, so this takes the CUDA 12 build
+# from Warp's GitHub release (Linux x86_64 only).
+warp = [
+    { include-group = "jax-cuda" },
+    "warp-lang ; sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+dev = [
+    "nanobind>=3.1.0",
+    "pytest>=9.1.1",
+    "ruff>=0.6",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -39,6 +73,8 @@ build-backend = "hatchling.build"
 packages = ["src/elevator_rl"]
 
 [tool.uv]
+default-groups = ["dev", "cpu"]
+conflicts = [[{ group = "cpu" }, { group = "cuda" }]]
 required-environments = [
  "sys_platform == 'darwin' and platform_machine == 'x86_64'"
 ]
@@ -54,3 +90,7 @@ src = ["src", "tests", "scripts"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# Warp kernels need `int(0)`, not `0`, for a variable a loop changes.
+"src/elevator_rl/warp_env.py" = ["UP018"]
