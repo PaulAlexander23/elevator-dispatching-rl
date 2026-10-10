@@ -14,7 +14,7 @@ jobs:
         with:
           enable-cache: true
       # uv's own Python, which ships the headers the C++ module needs.
-      - run: uv sync --locked --python-preference only-managed --group jax
+      - run: uv sync --locked --python-preference only-managed --group jax --group hydra
       # The Warp env's tests, on Warp's CPU backend (the runners have no GPU).
       # PyPI's wheel runs there; the warp group's CUDA 12 build and CUDA JAX
       # are only needed on a GPU. A cold kernel cache takes about 2 minutes.

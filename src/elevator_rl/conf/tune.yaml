@@ -1,0 +1,35 @@
+# One JAX PPO run (elevator_rl.tune). Override any key on the command line, and
+# sweep with -m (Hydra's multirun), e.g.
+#   python -m elevator_rl.tune -m ppo.learning_rate=1e-4,3e-4 seed=0,1,2
+preset: full
+obs_type: relative
+reward_shaping: true
+backend: warp  # or jax
+timesteps: 5_000_000
+eval_freq: 250_000
+n_eval_episodes: 10
+seed: 0
+
+# jax_ppo.PPOConfig; the defaults are the SB3 recipe with a 256x256 MLP.
+ppo:
+  n_envs: 64
+  n_steps: 32
+  batch_size: 64
+  n_epochs: 3
+  learning_rate: 3e-4
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_range: 0.2
+  ent_coef: 0.0
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  net_arch: [256, 256]
+
+hydra:
+  run:
+    dir: runs/tune/${now:%Y-%m-%d_%H-%M-%S}
+  sweep:
+    dir: runs/tune/multirun/${now:%Y-%m-%d_%H-%M-%S}
+    subdir: ${hydra.job.num}
+  job:
+    chdir: false
