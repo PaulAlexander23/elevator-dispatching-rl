@@ -544,11 +544,40 @@ Gate 2 answered no: after Phase 2 the env took 1% of training time, so EnvPool c
 - [x] Phase 3: EnvPool sync vs async at 1–16 threads; PPO steps/s vs Phase 2
 - [ ] Every phase: `benchmark.py` reward table within noise of the Python env across 3 seeds
 
+### Learning quality: at equal time, the fast settings win
+
+At equal wall-clock time, 1,024 envs × 8 steps with minibatch 2,048 learns best: 71.5 ± 1.8 passengers per episode after 2.9 minutes, above the heuristic's 69, against 68.6 ± 1.1 for the recipe. Per sample, large minibatches do learn worse, but they run 2–11× more samples in the same time.
+
+Equal time (about 2.7 minutes of training; `full`, warm start, lr 3e-5, Warp env, 3 seeds; final reward = mean of the last fifth of evals):
+
+| Setting (envs × steps : minibatch) | Steps | Final reward | Best eval |
+| --- | --: | --: | --: |
+| 1,024 × 8 : 2,048 | 40M | 71.5 ± 1.8 | 74.8 |
+| 64 × 32 : 512 | 10M | 69.0 ± 0.7 | 72.5 |
+| 64 × 32 : 2,048 | 12M | 68.7 ± 0.8 | 72.5 |
+| 64 × 32 : 64 (recipe) | 5M | 68.6 ± 1.1 | 72.6 |
+| 16,384 × 8 : 16,384 | 57M | 67.5 ± 1.0 | 71.2 |
+
+Equal samples (5M steps):
+
+| Setting (envs × steps : minibatch) | Final reward | PPO steps/s |
+| --- | --: | --: |
+| 64 × 32 : 64 (recipe) | 68.6 ± 1.1 | 31,895 |
+| 64 × 32 : 512 | 67.3 ± 0.4 | 61,685 |
+| 64 × 32 : 2,048 | 64.2 ± 0.9 | 73,530 |
+| 1,024 × 8 : 2,048 | 63.5 ± 0.3 | 246,621 |
+| 16,384 × 8 : 16,384 | 57.2 ± 0.2 | 358,574 |
+
+_Source: `scripts/learning_quality.sh`, then `python -m elevator_rl.tune_report runs/lq/* runs/lq-time/*`._
+
+- **Throughput beats sample efficiency here, up to a point.** 16,384 envs runs 1.4× faster than 1,024 but learns so much less per sample that it ends last: its 131k-step rollout gives only 24 gradient steps.
+- **PPO now beats the heuristic on `full`,** in under 3 minutes of training.
+
 ## Backlog: to come back to
 
 These were recommended along the way and deferred, so Phases 3 and 4 could go ahead first. Logged 2026-10-10.
 
-- [ ] **Check learning quality at the fast settings.** On `full`, compare the recipe (minibatch 64, 64 envs × 32 steps) against minibatch 512 and 2048, and 64 vs 1024 envs, on the GPU. Plot reward against wall-clock minutes. Large minibatches learned worse per sample on `original`, so the 17× throughput may cost reward.
+- [x] **Check learning quality at the fast settings.** On `full`, compare the recipe (minibatch 64, 64 envs × 32 steps) against minibatch 512 and 2048, and 64 vs 1024 envs, on the GPU. Plot reward against wall-clock minutes. Large minibatches learned worse per sample on `original`, so the 17× throughput may cost reward. Done in JAX (see "Learning quality: at equal time, the fast settings win" below): per sample, larger minibatches learn worse (5M steps: 68.6 recipe, 63.5 at 1,024 × 8 : 2,048, 57.2 at 16,384 envs), but at equal time 1,024 × 8 : 2,048 learns best, 71.5 ± 1.8 in 2.9 minutes, above the heuristic's 69.
 - [ ] **Tune PPO for large minibatches** if that check shows a gap: a higher learning rate, more gradient epochs per rollout, or a learning-rate schedule.
 - [ ] **Longer training runs on `full`,** deferred until the speed-ups land. Target: beat the heuristic's 69 (the recipe reaches 66.8 ± 1.3 after 500k steps).
 - [ ] **Learner defaults in `train.py`:** set torch threads to the physical core count (8 here, against 1 now), and suggest `--device cuda` when minibatch ≥ 512.
@@ -562,7 +591,7 @@ These were recommended along the way and deferred, so Phases 3 and 4 could go ah
 
 Added after Phases 3 and 4:
 
-- [ ] **Run the learning-quality check in JAX.** It is now cheap: 5M steps of `full` take under a minute at the fast settings.
+- [x] **Run the learning-quality check in JAX.** It is now cheap: 5M steps of `full` take under a minute at the fast settings.
 - [x] **Port the imitation warm start to JAX,** so the `full` recipe (behaviour cloning, then PPO at learning rate 3e-5) can run there. Done: `jax_imitate` clones the heuristic into the JAX PPO's networks (`jax_ppo --pretrain 100000`, or `warm_start.samples=100000` in the Hydra config). It starts at 54 passengers (SB3's clone: 57.5), and the recipe then reaches 68.6 ± 1.1 after 5M steps (3 seeds), level with the heuristic's 69.
 - [ ] **Port the target action mode and the `custom` observation to JAX.**
 - [ ] **Profile the JAX env** with `jax.profiler` to find what limits it at about 660k env steps/s; applying the actions is half of each step.
