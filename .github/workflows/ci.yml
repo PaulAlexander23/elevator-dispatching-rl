@@ -13,7 +13,15 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
-      - run: uv sync --locked
+      # uv's own Python, which ships the headers the C++ module needs.
+      - run: uv sync --locked --python-preference only-managed --group jax
       - run: uv run ruff check .
       - run: uv run ruff format --check .
+      - name: Build and test the C++ port
+        run: |
+          cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release -DPython_EXECUTABLE=$PWD/.venv/bin/python
+          cmake --build cpp/build --parallel
+          ctest --test-dir cpp/build --output-on-failure
+      # With cpp/build and elevator_rl._cpp present, tests/test_cpp*.py check
+      # parity with Python instead of skipping.
       - run: uv run pytest
