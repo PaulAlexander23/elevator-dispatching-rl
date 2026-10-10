@@ -12,7 +12,15 @@ The project is managed with [uv](https://docs.astral.sh/uv/):
 uv sync                     # runtime + dev dependencies
 uv sync --extra bench       # + psutil for the timing scripts
 uv sync --extra gnn         # + torch-geometric for scripts/gnn.py
+uv sync --no-group cpu --group cuda   # CUDA torch instead of the CPU build
 ```
+
+torch comes from PyTorch's CPU index unless you ask for the `cuda` group,
+which installs the CUDA 12.6 build (the newest that still runs on GTX 10xx
+GPUs). The two groups conflict, so only one is installed at a time. A plain
+`uv sync` or `uv run` switches back to the CPU build, so run GPU jobs with
+`uv run --no-group cpu --group cuda ...` (or `uv run --no-sync ...` after
+the sync above).
 
 ## Usage
 
@@ -177,8 +185,7 @@ uv run python -m elevator_rl.sweep --preset full --n-envs 1 4 16 64 \
 helps with large minibatches (512+), and then the env's speed matters again:
 with `--vec-env cpp`, 1024 envs and minibatch 2048, a GTX 1080 runs about
 50k PPO steps/s, against 4.5k with the Python envs. `train.py --device cuda`
-trains on the GPU. The project's lockfile pins the CPU build of torch, so a
-CUDA build has to be installed separately.
+trains on the GPU, after `uv sync --no-group cpu --group cuda`.
 
 ## C++ port
 
