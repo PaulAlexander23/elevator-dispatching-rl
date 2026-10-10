@@ -254,6 +254,37 @@ envs straight away in one batched call. Only the `box` and `relative`
 observations are available, because an EnvPool spec fixes the dtype at
 compile time.
 
+## JAX
+
+`elevator_rl.jax_env` ports `BuildingEnv` (step actions; `box` and `relative`
+observations) to pure JAX functions over fixed-size arrays, so thousands of
+envs run in one `vmap` on a GPU. `elevator_rl.jax_ppo` is PPO written to
+match SB3's, with the rollout and the update compiled into one XLA program.
+
+```sh
+uv sync --group jax-cuda                    # or --group jax for the CPU only
+uv run pytest tests/test_jax_env.py tests/test_jax_ppo.py
+uv run python -m elevator_rl.jax_ppo --preset full --n-envs 1024 --n-steps 8 \
+    --batch-size 2048 --timesteps 5000000
+uv run python scripts/time_jax_env.py       # env steps/s
+uv run python scripts/time_jax_ppo.py       # PPO steps/s on the SB3 sweep's settings
+```
+
+The parity tests replay Python's arrivals in float64 and match every
+observation exactly. That needs an `optimization_barrier` in the kinematics,
+because XLA fuses `a + b * c` into a fused multiply-add, which rounds
+differently from NumPy (the C++ port uses `-ffp-contract=off` for the same
+reason). Training runs in float32.
+
+On a GTX 1080, JAX PPO on `full` runs 30k steps/s with the training recipe's
+settings (64 envs x 64 steps, minibatch 64), against 4.3k for SB3 with the
+C++ env on the same GPU, and 238k steps/s with 16,384 envs.
+
+If JAX falls back to the CPU with "Unable to load cuSPARSE", an older CUDA
+library on `LD_LIBRARY_PATH` is shadowing the one in JAX's wheel: remove the
+system library directories (`/usr/lib/x86_64-linux-gnu` and friends) from
+`LD_LIBRARY_PATH`, or run with `env -u LD_LIBRARY_PATH`.
+
 ## License
 
 [MIT](LICENSE)
