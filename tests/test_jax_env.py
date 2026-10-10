@@ -18,6 +18,7 @@ from elevator_rl.jax_env import (  # noqa: E402
     JaxBuildingEnv,
     arrivals_from_list,
     make_vec_env,
+    one_hot,
 )
 
 
@@ -31,7 +32,12 @@ def x64():
 OPTIONS = [
     {"obs_type": "relative", "reward_shaping": True},
     {"obs_type": "box", "reward_shaping": "progress_waiting", "observe_direction": True},
+    {"obs_type": "custom", "reward_shaping": True, "observe_direction": True},
+    {"obs_type": "relative", "reward_shaping": True, "action_mode": "target"},
+    {"obs_type": "custom", "action_mode": "target"},
+    {"obs_type": "box", "action_mode": "target", "observe_direction": True},
 ]
+IDS = ["relative", "box", "custom", "relative-target", "custom-target", "box-target"]
 
 
 def recorded(env):
@@ -42,12 +48,15 @@ def recorded(env):
     return drawn
 
 
-@pytest.mark.parametrize("options", OPTIONS, ids=["relative", "box"])
+@pytest.mark.parametrize("options", OPTIONS, ids=IDS)
 @pytest.mark.parametrize("preset", ["original", "multi", "kinematic", "hall_calls", "full"])
 def test_jax_matches_python_step_for_step(preset, options):
     env = BuildingEnv(preset, max_steps=80, **options)
     jenv = JaxBuildingEnv(preset, max_steps=80, **options)
     assert jenv.observation_size == env.observation_space.shape[0]
+    assert jenv.n_actions == env.action_space.nvec[0]
+    if options["obs_type"] == "custom":
+        np.testing.assert_array_equal(jenv.observation_nvec, env.observation_space.nvec)
     n = env.config.n_floors
     drawn = recorded(env)
     step = jax.jit(jenv.step)
@@ -131,3 +140,14 @@ def test_vec_env_auto_resets_with_terminal_obs():
             assert (np.asarray(info["episode_length"]) == 5).all()
             assert (np.asarray(vec_state.env.steps) == 0).all()
             assert not np.array_equal(obs, info["terminal_obs"])
+
+
+def test_one_hot_matches_sb3():
+    import torch
+    from stable_baselines3.common.preprocessing import preprocess_obs
+
+    env = BuildingEnv("full", obs_type="custom", action_mode="target")
+    obs = np.stack([env.reset(seed=s)[0] for s in range(3)])
+    expected = preprocess_obs(torch.as_tensor(obs), env.observation_space).numpy()
+    got = one_hot(jax.numpy.asarray(obs, jax.numpy.float32), env.observation_space.nvec)
+    np.testing.assert_array_equal(got, expected)

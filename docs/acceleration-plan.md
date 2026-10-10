@@ -460,7 +460,7 @@ What we learned:
 - **JAX doesn't pay on the CPU.** JAX PPO manages 3.6–4.9k steps/s there, below SB3 with 8 torch threads (19k).
 - **A shell setting broke CUDA.** AMD's AOCC setup script put the system library directories on `LD_LIBRARY_PATH`. JAX then loaded Ubuntu's 2023 `libnvJitLink` instead of its own and fell back to the CPU. Fixed in `~/.profile`.
 - **Compiling takes 3–4 s** per configuration, paid once per run.
-- **Not ported yet:** the target action mode, the `custom` observation and the imitation warm start (see the backlog).
+- **Not ported yet:** the imitation warm start (see the backlog). The target action mode and the `custom` observation were ported later.
 
 ### Phase 4 result: NVIDIA Warp implemented
 
@@ -564,7 +564,7 @@ Added after Phases 3 and 4:
 
 - [ ] **Run the learning-quality check in JAX.** It is now cheap: 5M steps of `full` take under a minute at the fast settings.
 - [ ] **Port the imitation warm start to JAX,** so the `full` recipe (behaviour cloning, then PPO at learning rate 3e-5) can run there.
-- [ ] **Port the target action mode and the `custom` observation to JAX.**
+- [x] **Port the target action mode and the `custom` observation to JAX.** Done: both match Python exactly, step for step on every preset (float64), and the JAX PPO one-hot encodes `custom` as SB3 does (`--obs-type custom --action-mode target`).
 - [ ] **Profile the JAX env** with `jax.profiler` to find what limits it at about 660k env steps/s; applying the actions is half of each step.
 - [ ] **Try EnvPool's XLA interface,** which lets JAX step EnvPool envs from inside `jit`, as a bridge between Phases 3 and 4.
 
