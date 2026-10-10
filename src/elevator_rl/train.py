@@ -1,4 +1,5 @@
 import argparse
+import os
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import EvalCallback
@@ -29,6 +30,20 @@ def make_env(
 
 VEC_ENVS = ("dummy", "subproc", "cpp", "ctypes", "envpool")
 
+# Each SubprocVecEnv worker imports SB3 and PyTorch: about 240 MB resident
+# (measured, Linux, torch 2.14 CPU). 256 workers ran a 31 GB machine out of memory.
+SUBPROC_MB = 250
+
+
+def max_subproc_envs(memory_bytes=None):
+    """How many SubprocVecEnv workers fit in three quarters of physical memory."""
+    if memory_bytes is None:
+        try:
+            memory_bytes = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+        except (ValueError, OSError, AttributeError):  # not on Linux/macOS
+            return None
+    return int(0.75 * memory_bytes / (SUBPROC_MB * 2**20))
+
 
 def make_vec_env(
     n_envs=1,
@@ -54,6 +69,14 @@ def make_vec_env(
         return cls(
             preset, n_envs, obs_type, reward_shaping, action_mode=action_mode, seed=seed or 0
         )
+    if vec_env == "subproc":
+        limit = max_subproc_envs()
+        if limit is not None and n_envs > limit:
+            raise ValueError(
+                f"{n_envs} SubprocVecEnv workers need about {n_envs * SUBPROC_MB / 1024:.0f} GB "
+                f"(each loads PyTorch); this machine fits about {limit}. "
+                "Use fewer, or the cpp or envpool VecEnv, which run in one process."
+            )
     cls = SubprocVecEnv if vec_env == "subproc" else DummyVecEnv
     return cls(
         [lambda: make_env(obs_type, reward_shaping, preset=preset, action_mode=action_mode)]

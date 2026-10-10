@@ -556,7 +556,7 @@ These were recommended along the way and deferred, so Phases 3 and 4 could go ah
 - [ ] **Reward parity per phase:** run the `benchmark.py` reward table across 3 seeds for each env backend (Python, C++, EnvPool, JAX), as the milestone list asks.
 - [x] **DLL route (open question in the comments):** a flat `extern "C"` API loaded with `ctypes`, as a comparison with the nanobind module. Done on branch ctypes-dll: see its result section under Phase 2.
 - [ ] **Packaging:** build the C++ module with scikit-build-core so `uv sync` compiles it, keeping the pure-Python fallback.
-- [ ] **`SubprocVecEnv` memory:** 256 subprocesses ran this 31 GB machine out of memory, because each process loads torch. Either cap it in the sweep or document the limit.
+- [x] **`SubprocVecEnv` memory:** 256 subprocesses ran this 31 GB machine out of memory, because each process loads torch. Either cap it in the sweep or document the limit. Done: each worker holds about 240 MB, so `make_vec_env` refuses more workers than three quarters of physical memory fits (about 95 here), pointing to the cpp or envpool VecEnvs; the sweep skips such configs.
 - [x] **NVIDIA Warp,** the other half of Phase 4. Done: see its result section.
 - [x] **Merged as PR #2** for `heavier-env`.
 
