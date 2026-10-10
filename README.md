@@ -140,6 +140,26 @@ uv run python scripts/time_env.py --preset full
 uv run python scripts/time_ppo.py --preset full
 ```
 
+### Training the 30-floor presets
+
+PPO from scratch does not learn the 30-floor presets (`tall` onwards): a
+delivery takes dozens of correct steps in a row, so random exploration rarely
+finds one, and the empty-serve penalty teaches it to never open the doors.
+What works is to imitate a classic collective-control heuristic first, with
+an observation centred on each lift, then fine-tune with a low learning rate:
+
+```sh
+uv run python -m elevator_rl.train --preset full --obs-type relative \
+    --n-envs 64 --n-steps 32 --batch-size 64 --net-arch 256 256 \
+    --pretrain 100000 --learning-rate 3e-5 --timesteps 500000
+```
+
+On `full` this delivers about 67 passengers per episode after 500k steps
+(the heuristic, `baselines.CollectivePolicy`, delivers 69 and a random
+policy 7). `BuildingEnv` also has a target-floor action mode, a
+direction-of-travel observation and several reward shapings
+(`building_env.SHAPINGS`) for experiments; `elevator_rl.compare` runs them.
+
 To see where PPO's time goes as training is parallelised, sweep the number of
 envs and the batch size. Each run reports PPO steps/s and the share of time
 spent stepping envs, in policy forward passes and SB3 bookkeeping, and in the
