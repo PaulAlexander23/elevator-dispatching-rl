@@ -29,6 +29,8 @@ from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3.common.vec_env import DummyVecEnv
 
 from elevator_rl.building import PRESETS
+from elevator_rl.building_env import ACTION_MODES, SHAPINGS
+from elevator_rl.building_env import OBS_TYPES as BUILDING_OBS_TYPES
 from elevator_rl.train import make_env, make_eval_env
 
 SETTING = re.compile(r"^(\d+)x(\d+):(\d+)$")
@@ -85,13 +87,27 @@ class PeriodicEval(BaseCallback):
         self._next = self.num_timesteps + self.eval_freq
 
 
-def run_setting(preset, setting, seed, timesteps, eval_freq, n_eval_episodes):
+def run_setting(
+    preset,
+    setting,
+    seed,
+    timesteps,
+    eval_freq,
+    n_eval_episodes,
+    shaping="default",
+    action_mode="step",
+    pretrain=0,
+    obs_type="custom",
+    net_arch=None,
+    ppo_kwargs=None,
+):
     """Train one setting with one seed. Runs in a worker process."""
     import torch
 
     torch.set_num_threads(1)
     envs = DummyVecEnv(
-        [lambda: make_env("custom", reward_shaping=True, preset=preset)] * setting["n_envs"]
+        [lambda: make_env(obs_type, shaping, preset=preset, action_mode=action_mode)]
+        * setting["n_envs"]
     )
     model = PPO(
         "MlpPolicy",
@@ -102,10 +118,30 @@ def run_setting(preset, setting, seed, timesteps, eval_freq, n_eval_episodes):
         n_steps=setting["n_steps"],
         batch_size=setting["batch_size"],
         seed=seed,
+        policy_kwargs={"net_arch": net_arch} if net_arch else None,
+        **(ppo_kwargs or {}),
     )
-    callback = PeriodicEval(make_eval_env("custom", preset=preset), eval_freq, n_eval_episodes)
+    if pretrain:
+        if action_mode != "step":
+            raise ValueError("--pretrain imitates a step-mode heuristic; use --action-modes step")
+        from elevator_rl.imitate import warm_start
+
+        warm_start(model, preset, pretrain, shaping, seed=seed, obs_type=obs_type)
+    eval_env = make_eval_env(obs_type, preset=preset, action_mode=action_mode)
+    callback = PeriodicEval(eval_env, eval_freq, n_eval_episodes)
     model.learn(total_timesteps=timesteps, callback=callback)
-    return {**setting, "preset": preset, "seed": seed, "curve": callback.curve}
+    return {
+        **setting,
+        "preset": preset,
+        "shaping": shaping,
+        "action_mode": action_mode,
+        "pretrain": pretrain,
+        "obs_type": obs_type,
+        "net_arch": net_arch,
+        "ppo_kwargs": ppo_kwargs,
+        "seed": seed,
+        "curve": callback.curve,
+    }
 
 
 def random_baseline(preset, n_episodes, seed=12_345):
@@ -123,7 +159,14 @@ def random_baseline(preset, n_episodes, seed=12_345):
 
 
 def label(run):
-    return f"{run['n_envs']}x{run['n_steps']}:{run['batch_size']}"
+    name = f"{run['n_envs']}x{run['n_steps']}:{run['batch_size']}"
+    if run.get("shaping", "default") != "default":
+        name += f" {run['shaping']}"
+    if run.get("action_mode", "step") != "step":
+        name += f" {run['action_mode']}"
+    if run.get("pretrain"):
+        name += " +imitation"
+    return name
 
 
 def summarise(runs, final_fraction=0.2):
@@ -157,7 +200,8 @@ def markdown_table(rows, settings):
         f"{settings['eval_freq']:,} steps, {settings['machine']}. "
         f"Random policy: {settings['random_reward']:.1f}._",
         "",
-        "| Setting (envs x steps : batch) | Final reward | PPO steps/s | Training minutes |",
+        "| Setting (envs x steps : batch, shaping, action mode) | Final reward | PPO steps/s "
+        "| Training minutes |",
         "|---|---:|---:|---:|",
     ]
     for row in rows:
@@ -177,6 +221,31 @@ def main(argv=None):
     parser.add_argument(
         "--settings", nargs="+", default=["1x2048:64", "64x32:64", "64x32:512", "64x128:512"]
     )
+    parser.add_argument(
+        "--shaping",
+        nargs="+",
+        choices=SHAPINGS,
+        default=["default"],
+        help="training reward shaping(s) for BuildingEnv presets; each is compared",
+    )
+    parser.add_argument("--action-modes", nargs="+", choices=ACTION_MODES, default=["step"])
+    parser.add_argument(
+        "--pretrain",
+        type=int,
+        default=0,
+        help="first imitate the collective heuristic on this many samples (step mode only)",
+    )
+    parser.add_argument("--obs-type", choices=BUILDING_OBS_TYPES, default="custom")
+    parser.add_argument(
+        "--net-arch", type=int, nargs="+", help="hidden layer sizes (SB3 default: 64 64)"
+    )
+    parser.add_argument(
+        "--ppo",
+        nargs="+",
+        default=[],
+        metavar="KEY=VALUE",
+        help="extra PPO arguments, e.g. learning_rate=3e-5 clip_range=0.1",
+    )
     parser.add_argument("--timesteps", type=int, default=500_000)
     parser.add_argument("--seeds", type=int, default=3)
     parser.add_argument("--eval-freq", type=int, default=25_000)
@@ -186,7 +255,14 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     settings_list = [parse_setting(text) for text in args.settings]
-    jobs = [(s, seed) for s in settings_list for seed in range(args.seeds)]
+    ppo_kwargs = {key: float(value) for key, value in (p.split("=", 1) for p in args.ppo)}
+    jobs = [
+        (s, shaping, mode, seed)
+        for mode in args.action_modes
+        for shaping in args.shaping
+        for s in settings_list
+        for seed in range(args.seeds)
+    ]
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
         futures = [
             pool.submit(
@@ -197,8 +273,14 @@ def main(argv=None):
                 args.timesteps,
                 args.eval_freq,
                 args.episodes,
+                shaping,
+                mode,
+                args.pretrain,
+                args.obs_type,
+                args.net_arch,
+                ppo_kwargs,
             )
-            for setting, seed in jobs
+            for setting, shaping, mode, seed in jobs
         ]
         runs = []
         for future in futures:
@@ -208,6 +290,9 @@ def main(argv=None):
     settings = {
         "date": date.today().isoformat(),
         "preset": args.preset,
+        "obs_type": args.obs_type,
+        "net_arch": args.net_arch,
+        "ppo": args.ppo,
         "timesteps": args.timesteps,
         "seeds": args.seeds,
         "episodes": args.episodes,

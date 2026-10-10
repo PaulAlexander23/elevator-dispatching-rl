@@ -7,22 +7,38 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv
 
 from elevator_rl.building import PRESETS
-from elevator_rl.building_env import BuildingEnv
+from elevator_rl.building_env import ACTION_MODES, SHAPINGS, BuildingEnv
 from elevator_rl.env import OBS_TYPES, LiftEnv
 
 
-def make_env(obs_type="custom", reward_shaping=False, render_mode=None, preset=None):
+def make_env(
+    obs_type="custom", reward_shaping=False, render_mode=None, preset=None, action_mode="step"
+):
     """The original `LiftEnv`, or a `BuildingEnv` when a preset is named."""
     if preset is None:
         return LiftEnv(render_mode, reward_shaping=reward_shaping, obs_type=obs_type)
-    return BuildingEnv(preset, render_mode, reward_shaping=reward_shaping, obs_type=obs_type)
+    return BuildingEnv(
+        preset,
+        render_mode,
+        reward_shaping=reward_shaping,
+        obs_type=obs_type,
+        action_mode=action_mode,
+    )
 
 
 def make_model(
-    obs_type="custom", reward_shaping=True, seed=None, n_steps=2048, verbose=1, preset=None
+    obs_type="custom",
+    reward_shaping=True,
+    seed=None,
+    n_steps=2048,
+    verbose=1,
+    preset=None,
+    action_mode="step",
 ):
     """PPO on a training env; shaping only affects training, not evaluation."""
-    envs = DummyVecEnv([lambda: make_env(obs_type, reward_shaping, preset=preset)])
+    envs = DummyVecEnv(
+        [lambda: make_env(obs_type, reward_shaping, preset=preset, action_mode=action_mode)]
+    )
     # policy_kwargs={"net_arch":{"pi":[64],"vf":[64]}}
     return PPO(
         "MlpPolicy",
@@ -35,9 +51,11 @@ def make_model(
     )
 
 
-def make_eval_env(obs_type="custom", render_mode=None, preset=None):
+def make_eval_env(obs_type="custom", render_mode=None, preset=None, action_mode="step"):
     """Unshaped env, so the reward is the number of passengers delivered."""
-    return DummyVecEnv([lambda: Monitor(make_env(obs_type, False, render_mode, preset))])
+    return DummyVecEnv(
+        [lambda: Monitor(make_env(obs_type, False, render_mode, preset, action_mode))]
+    )
 
 
 def main(
@@ -48,9 +66,14 @@ def main(
     n_steps=2048,
     obs_type="custom",
     preset=None,
+    shaping="default",
+    action_mode="step",
 ):
-    model = make_model(obs_type, n_steps=n_steps, preset=preset)
-    eval_envs = make_eval_env(obs_type, preset=preset)
+    reward_shaping = True if preset is None else shaping
+    model = make_model(
+        obs_type, reward_shaping, n_steps=n_steps, preset=preset, action_mode=action_mode
+    )
+    eval_envs = make_eval_env(obs_type, preset=preset, action_mode=action_mode)
     mean_reward, std_reward = evaluate_policy(model, eval_envs, n_eval_episodes=n_eval_episodes)
     print(f"mean reward: {mean_reward}, std reward: {std_reward}")
 
@@ -75,6 +98,18 @@ def cli():
         choices=PRESETS,
         help="train on the multi-lift BuildingEnv with this config (obs type custom or box)",
     )
+    parser.add_argument(
+        "--shaping",
+        choices=SHAPINGS,
+        default="default",
+        help="training reward shaping for --preset (see building_env.SHAPINGS)",
+    )
+    parser.add_argument(
+        "--action-mode",
+        choices=ACTION_MODES,
+        default="step",
+        help="for --preset: one floor per action, or a target floor per lift",
+    )
     args = parser.parse_args()
     main(
         total_timesteps=args.timesteps,
@@ -82,6 +117,8 @@ def cli():
         save_path=args.save_path,
         obs_type=args.obs_type,
         preset=args.preset,
+        shaping=args.shaping,
+        action_mode=args.action_mode,
     )
 
 
