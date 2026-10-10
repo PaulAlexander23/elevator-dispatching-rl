@@ -80,9 +80,11 @@ src/elevator_rl/   sim.py (simulator), env.py (Gymnasium env), train.py (PPO tra
                    building.py + building_env.py (configurable multi-lift env),
                    sweep.py + compare.py (PPO throughput and learning comparisons),
                    trace.py (trajectories for the C++ parity check),
-                   imitate.py (warm start from the heuristic), cpp_env.py (C++ VecEnv)
+                   imitate.py (warm start from the heuristic), cpp_env.py (C++ VecEnv),
+                   ctypes_env.py (the same VecEnv over the C API, through ctypes)
 cpp/               C++ port of the multi-lift env, its Python binding (python/),
-                   replay, benchmark and tests
+                   a flat C API built as a shared library (capi/), replay,
+                   benchmark and tests
 tests/             pytest suite
 scripts/           evaluation, baselines, benchmarks and GNN experiments
 ```
@@ -205,8 +207,9 @@ compared instead.
 uv sync                                            # installs nanobind for the binding
 cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release -DPython_EXECUTABLE=$PWD/.venv/bin/python
 cmake --build cpp/build                            # also builds src/elevator_rl/_cpp*.so
+                                                   # and src/elevator_rl/libelevator_c.so
 ctest --test-dir cpp/build                         # C++ unit tests
-uv run pytest tests/test_cpp.py tests/test_cpp_env.py   # parity with Python
+uv run pytest tests/test_cpp.py tests/test_cpp_env.py tests/test_ctypes_env.py
 cpp/build/elevator_bench --preset full --steps 2000000
 ```
 
@@ -223,6 +226,13 @@ uv run python -m elevator_rl.train --preset full --obs-type relative --vec-env c
 
 Rebuild with `cmake --build cpp/build` after changing the C++; the module is
 not part of the installed package.
+
+The same env is also built as a plain shared library with a flat
+`extern "C"` API (`cpp/capi/elevator_c.h`), which needs no Python headers
+and can be loaded from any language. `elevator_rl.ctypes_env.CtypesVecEnv`
+loads it with `ctypes` and gives the same results as `CppVecEnv`; train on
+it with `--vec-env ctypes`. `scripts/time_ctypes.py` compares the call
+overhead of the two routes.
 
 Each floor queue holds at most 512 passengers (the longest seen in Python is
 about 310); extra arrivals are dropped and counted, and the parity tests
