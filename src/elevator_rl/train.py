@@ -4,7 +4,7 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import EvalCallback
 from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
 from elevator_rl.building import PRESETS
 from elevator_rl.building_env import ACTION_MODES, SHAPINGS, BuildingEnv
@@ -27,6 +27,34 @@ def make_env(
     )
 
 
+VEC_ENVS = ("dummy", "subproc", "cpp")
+
+
+def make_vec_env(
+    n_envs=1,
+    vec_env="dummy",
+    obs_type="custom",
+    reward_shaping=False,
+    preset=None,
+    action_mode="step",
+    seed=0,
+):
+    """`n_envs` training envs: Python in one process, one process each, or C++."""
+    if vec_env == "cpp":
+        if preset is None:
+            raise ValueError("the C++ env is a BuildingEnv: name a preset")
+        from elevator_rl.cpp_env import CppVecEnv
+
+        return CppVecEnv(
+            preset, n_envs, obs_type, reward_shaping, action_mode=action_mode, seed=seed or 0
+        )
+    cls = SubprocVecEnv if vec_env == "subproc" else DummyVecEnv
+    return cls(
+        [lambda: make_env(obs_type, reward_shaping, preset=preset, action_mode=action_mode)]
+        * n_envs
+    )
+
+
 def make_model(
     obs_type="custom",
     reward_shaping=True,
@@ -39,15 +67,13 @@ def make_model(
     batch_size=64,
     net_arch=None,
     learning_rate=3e-4,
+    vec_env="dummy",
 ):
     """PPO on a training env; shaping only affects training, not evaluation.
 
     `n_steps` is per env, so each rollout holds n_envs x n_steps steps.
     """
-    envs = DummyVecEnv(
-        [lambda: make_env(obs_type, reward_shaping, preset=preset, action_mode=action_mode)]
-        * n_envs
-    )
+    envs = make_vec_env(n_envs, vec_env, obs_type, reward_shaping, preset, action_mode, seed)
     return PPO(
         "MlpPolicy",
         envs,
@@ -84,6 +110,7 @@ def main(
     net_arch=None,
     learning_rate=3e-4,
     pretrain=0,
+    vec_env="dummy",
 ):
     """Train PPO and save it. With `pretrain`, first imitate the collective
     heuristic on that many samples (BuildingEnv presets, step actions only)."""
@@ -98,6 +125,7 @@ def main(
         batch_size=batch_size,
         net_arch=net_arch,
         learning_rate=learning_rate,
+        vec_env=vec_env,
     )
     if pretrain:
         if preset is None or action_mode != "step":
@@ -132,6 +160,9 @@ def cli():
         help="relative is BuildingEnv only; multi_binary and multi_discrete are LiftEnv only",
     )
     parser.add_argument("--n-envs", type=int, default=1)
+    parser.add_argument(
+        "--vec-env", choices=VEC_ENVS, default="dummy", help="cpp needs the built C++ module"
+    )
     parser.add_argument("--n-steps", type=int, default=2048, help="rollout steps per env")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--net-arch", type=int, nargs="+", help="hidden layer sizes")
@@ -174,6 +205,7 @@ def cli():
         net_arch=args.net_arch,
         learning_rate=args.learning_rate,
         pretrain=args.pretrain,
+        vec_env=args.vec_env,
     )
 
 

@@ -21,12 +21,11 @@ from pathlib import Path
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
-from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecEnvWrapper
+from stable_baselines3.common.vec_env import VecEnvWrapper
 
 from elevator_rl.building import PRESETS
-from elevator_rl.train import make_env
-
-VEC_ENVS = {"dummy": DummyVecEnv, "subproc": SubprocVecEnv}
+from elevator_rl.building_env import OBS_TYPES
+from elevator_rl.train import VEC_ENVS, make_vec_env
 
 
 class TimedVecEnv(VecEnvWrapper):
@@ -72,14 +71,22 @@ class PhaseTimer(BaseCallback):
         return True
 
 
-def run_one(preset, n_envs, batch_size, rollout, timesteps, vec_env="dummy", seed=0):
+def run_one(
+    preset,
+    n_envs,
+    batch_size,
+    rollout,
+    timesteps,
+    vec_env="dummy",
+    seed=0,
+    obs_type="custom",
+    net_arch=None,
+):
     """Train once and return throughput and the time split. Runs one config."""
     n_steps = rollout // n_envs
     if n_steps < 1:
         raise ValueError(f"rollout {rollout} is smaller than n_envs {n_envs}")
-    venv = VEC_ENVS[vec_env](
-        [lambda: make_env("custom", reward_shaping=True, preset=preset)] * n_envs
-    )
+    venv = make_vec_env(n_envs, vec_env, obs_type, True, preset, seed=seed)
     envs = TimedVecEnv(venv)
     model = PPO(
         "MlpPolicy",
@@ -90,6 +97,7 @@ def run_one(preset, n_envs, batch_size, rollout, timesteps, vec_env="dummy", see
         n_steps=n_steps,
         batch_size=batch_size,
         seed=seed,
+        policy_kwargs={"net_arch": net_arch} if net_arch else None,
     )
     model.learn(total_timesteps=n_steps * n_envs)  # warm-up, not timed
 
@@ -160,6 +168,8 @@ def main(argv=None):
     parser.add_argument("--n-envs", type=int, nargs="+", default=[1, 4, 16, 64])
     parser.add_argument("--batch-sizes", type=int, nargs="+", default=[64])
     parser.add_argument("--vec-envs", nargs="+", choices=VEC_ENVS, default=["dummy"])
+    parser.add_argument("--obs-type", choices=OBS_TYPES, default="custom")
+    parser.add_argument("--net-arch", type=int, nargs="+", help="hidden layer sizes")
     parser.add_argument("--rollout", type=int, default=2048, help="n_envs x n_steps")
     parser.add_argument("--timesteps", type=int, default=50_000, help="timed steps per run")
     parser.add_argument("--repeats", type=int, default=1, help="seeds per config")
@@ -185,6 +195,8 @@ def main(argv=None):
                         args.timesteps,
                         vec_env,
                         seed,
+                        args.obs_type,
+                        args.net_arch,
                     )
                     runs.append(run)
                     print(
@@ -196,6 +208,8 @@ def main(argv=None):
     settings = {
         "date": date.today().isoformat(),
         "preset": args.preset,
+        "obs_type": args.obs_type,
+        "net_arch": args.net_arch,
         "rollout": args.rollout,
         "timesteps": args.timesteps,
         "repeats": args.repeats,

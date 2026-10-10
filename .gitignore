@@ -8,3 +8,7 @@ logs/
 
 # C++ build output
 cpp/build/
+
+# Python module built by cpp/CMakeLists.txt
+src/elevator_rl/_cpp*.so
+src/elevator_rl/_cpp*.pyd

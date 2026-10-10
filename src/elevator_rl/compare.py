@@ -26,12 +26,11 @@ import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.evaluation import evaluate_policy
-from stable_baselines3.common.vec_env import DummyVecEnv
 
 from elevator_rl.building import PRESETS
 from elevator_rl.building_env import ACTION_MODES, SHAPINGS
 from elevator_rl.building_env import OBS_TYPES as BUILDING_OBS_TYPES
-from elevator_rl.train import make_env, make_eval_env
+from elevator_rl.train import VEC_ENVS, make_env, make_eval_env, make_vec_env
 
 SETTING = re.compile(r"^(\d+)x(\d+):(\d+)$")
 
@@ -100,14 +99,14 @@ def run_setting(
     obs_type="custom",
     net_arch=None,
     ppo_kwargs=None,
+    vec_env="dummy",
 ):
     """Train one setting with one seed. Runs in a worker process."""
     import torch
 
     torch.set_num_threads(1)
-    envs = DummyVecEnv(
-        [lambda: make_env(obs_type, shaping, preset=preset, action_mode=action_mode)]
-        * setting["n_envs"]
+    envs = make_vec_env(
+        setting["n_envs"], vec_env, obs_type, shaping, preset, action_mode, seed=seed
     )
     model = PPO(
         "MlpPolicy",
@@ -139,6 +138,7 @@ def run_setting(
         "obs_type": obs_type,
         "net_arch": net_arch,
         "ppo_kwargs": ppo_kwargs,
+        "vec_env": vec_env,
         "seed": seed,
         "curve": callback.curve,
     }
@@ -246,6 +246,7 @@ def main(argv=None):
         metavar="KEY=VALUE",
         help="extra PPO arguments, e.g. learning_rate=3e-5 clip_range=0.1",
     )
+    parser.add_argument("--vec-env", choices=VEC_ENVS, default="dummy")
     parser.add_argument("--timesteps", type=int, default=500_000)
     parser.add_argument("--seeds", type=int, default=3)
     parser.add_argument("--eval-freq", type=int, default=25_000)
@@ -279,6 +280,7 @@ def main(argv=None):
                 args.obs_type,
                 args.net_arch,
                 ppo_kwargs,
+                args.vec_env,
             )
             for setting, shaping, mode, seed in jobs
         ]
@@ -293,6 +295,7 @@ def main(argv=None):
         "obs_type": args.obs_type,
         "net_arch": args.net_arch,
         "ppo": args.ppo,
+        "vec_env": args.vec_env,
         "timesteps": args.timesteps,
         "seeds": args.seeds,
         "episodes": args.episodes,

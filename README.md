@@ -67,8 +67,10 @@ src/elevator_rl/   sim.py (simulator), env.py (Gymnasium env), train.py (PPO tra
                    baselines.py (hand-written policies), benchmark.py (obs-space comparison),
                    building.py + building_env.py (configurable multi-lift env),
                    sweep.py + compare.py (PPO throughput and learning comparisons),
-                   trace.py (trajectories for the C++ parity check)
-cpp/               C++ port of the multi-lift env, with replay, benchmark and tests
+                   trace.py (trajectories for the C++ parity check),
+                   imitate.py (warm start from the heuristic), cpp_env.py (C++ VecEnv)
+cpp/               C++ port of the multi-lift env, its Python binding (python/),
+                   replay, benchmark and tests
 tests/             pytest suite
 scripts/           evaluation, baselines, benchmarks and GNN experiments
 ```
@@ -181,12 +183,27 @@ Random draws differ from NumPy's, so the random-policy statistics are
 compared instead.
 
 ```sh
-cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release
-cmake --build cpp/build
+uv sync                                            # installs nanobind for the binding
+cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release -DPython_EXECUTABLE=.venv/bin/python
+cmake --build cpp/build                            # also builds src/elevator_rl/_cpp*.so
 ctest --test-dir cpp/build                         # C++ unit tests
-uv run pytest tests/test_cpp.py                    # parity with Python
+uv run pytest tests/test_cpp.py tests/test_cpp_env.py   # parity with Python
 cpp/build/elevator_bench --preset full --steps 2000000
 ```
+
+The Python module `elevator_rl._cpp` exposes the C++ env, and
+`elevator_rl.cpp_env.CppVecEnv` wraps it as a Stable-Baselines3 `VecEnv`:
+one call steps every env (without holding the GIL) and writes into
+preallocated arrays. Train on it with `--vec-env cpp`:
+
+```sh
+uv run python -m elevator_rl.train --preset full --obs-type relative --vec-env cpp \
+    --n-envs 64 --n-steps 32 --batch-size 64 --net-arch 256 256 \
+    --pretrain 100000 --learning-rate 3e-5
+```
+
+Rebuild with `cmake --build cpp/build` after changing the C++; the module is
+not part of the installed package.
 
 Each floor queue holds at most 512 passengers (the longest seen in Python is
 about 310); extra arrivals are dropped and counted, and the parity tests
