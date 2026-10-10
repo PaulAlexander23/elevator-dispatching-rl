@@ -277,10 +277,13 @@ def train(
     n_eval_episodes=10,
     verbose=True,
     backend="jax",
+    callback=None,
 ):
     """Train and return (params, history); history rows are dicts per eval.
 
     `backend` picks the env: "jax" (jax_env) or "warp" (warp_env).
+    `callback(row)` runs after each eval; returning True stops training early
+    (the hyperparameter search uses it to prune).
 
     Throughput excludes compilation (the first update) and evaluation.
     """
@@ -329,6 +332,8 @@ def train(
                     f"eval {row['eval_mean']:6.1f} ± {row['eval_std']:4.1f}",
                     flush=True,
                 )
+            if callback is not None and callback(row):
+                break
         else:
             train_seconds += time.perf_counter() - t0
     if verbose:
