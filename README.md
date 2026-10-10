@@ -61,7 +61,8 @@ uv run ruff format .
 
 ```
 src/elevator_rl/   sim.py (simulator), env.py (Gymnasium env), train.py (PPO training),
-                   baselines.py (hand-written policies), benchmark.py (obs-space comparison)
+                   baselines.py (hand-written policies), benchmark.py (obs-space comparison),
+                   building.py + building_env.py (configurable multi-lift env)
 tests/             pytest suite
 scripts/           evaluation, baselines, benchmarks and GNN experiments
 ```
@@ -106,6 +107,32 @@ Observations (`obs_type`)
   wanting that floor.
 - `"custom"`: lift position, passengers in the lift, then per-floor
   waiting and wanted counts.
+
+## Multi-lift building env
+
+`BuildingEnv` (`src/elevator_rl/building_env.py`) is a configurable,
+heavier version of the env for experimenting with acceleration. One central
+controller picks an action for every lift (`MultiDiscrete`), and the reward
+is summed over lifts. `BuildingConfig` (`src/elevator_rl/building.py`)
+switches each feature on or off:
+
+| Field | Default | Effect |
+|---|---|---|
+| `n_floors`, `n_lifts` | 10, 1 | Building size; lifts act in index order, so lift 0 boards first |
+| `hall_calls` | off | Up/down buttons; actions become up, down, serve up, serve down |
+| `traffic` | `uniform` | `up_peak`, `down_peak`, `lunch`, or `day` (morning up-peak to evening down-peak over an episode) |
+| `kinematics` | off | Acceleration, braking and door times, integrated in `substeps` per `step_seconds` |
+
+The default config matches `LiftEnv` step for step with the same seed (a test
+checks this). The presets add one feature at a time:
+`original` → `tall` (30 floors) → `multi` (4 lifts) → `kinematic` →
+`hall_calls` → `full` (day traffic).
+
+```sh
+uv run python -m elevator_rl.train --preset multi --timesteps 500000
+uv run python scripts/time_env.py --preset full
+uv run python scripts/time_ppo.py --preset full
+```
 
 ## License
 

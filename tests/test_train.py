@@ -20,3 +20,17 @@ def test_main_smoke(tmp_path):
 def test_main_full(tmp_path):
     """The full training run (~30 minutes). Run with `pytest -m slow`."""
     main(save_path=tmp_path / "model.zip")
+
+
+def test_main_smoke_with_preset(tmp_path):
+    """The multi-lift env trains through the same pipeline."""
+    save_path = tmp_path / "model.zip"
+    main(
+        total_timesteps=64,
+        eval_freq=64,
+        n_eval_episodes=1,
+        save_path=save_path,
+        n_steps=64,
+        preset="full",
+    )
+    assert save_path.exists()
