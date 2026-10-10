@@ -10,6 +10,13 @@ eval_freq: 250_000
 n_eval_episodes: 10
 seed: 0
 
+# Imitate the collective heuristic first (jax_imitate) on this many samples;
+# 0 trains from scratch. The SB3 recipe for full uses 100k, then lr 3e-5.
+warm_start:
+  samples: 0
+  epochs: 15
+  cache_dir: runs/cache
+
 # jax_ppo.PPOConfig; the defaults are the SB3 recipe with a 256x256 MLP.
 ppo:
   n_envs: 64
