@@ -41,6 +41,16 @@ bench = ["psutil>=5.9"]
 [dependency-groups]
 cpu = ["torch>=2.2.2"]
 cuda = ["torch>=2.2.2"]
+# The JAX port (jax_env, jax_ppo). jax-cuda adds the CUDA 12 plugin. JAX no
+# longer ships wheels for Intel Macs.
+jax = [
+    "jax>=0.6 ; sys_platform != 'darwin' or platform_machine == 'arm64'",
+    "optax>=0.2.4 ; sys_platform != 'darwin' or platform_machine == 'arm64'",
+]
+jax-cuda = [
+    { include-group = "jax" },
+    "jax[cuda12]>=0.6 ; sys_platform == 'linux'",
+]
 dev = [
     "nanobind>=3.1.0",
     "pytest>=9.1.1",

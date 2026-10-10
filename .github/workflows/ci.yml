@@ -14,7 +14,7 @@ jobs:
         with:
           enable-cache: true
       # uv's own Python, which ships the headers the C++ module needs.
-      - run: uv sync --locked --python-preference only-managed
+      - run: uv sync --locked --python-preference only-managed --group jax
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - name: Build and test the C++ port
