@@ -563,7 +563,7 @@ These were recommended along the way and deferred, so Phases 3 and 4 could go ah
 Added after Phases 3 and 4:
 
 - [ ] **Run the learning-quality check in JAX.** It is now cheap: 5M steps of `full` take under a minute at the fast settings.
-- [ ] **Port the imitation warm start to JAX,** so the `full` recipe (behaviour cloning, then PPO at learning rate 3e-5) can run there.
+- [x] **Port the imitation warm start to JAX,** so the `full` recipe (behaviour cloning, then PPO at learning rate 3e-5) can run there. Done: `jax_imitate` clones the heuristic into the JAX PPO's networks (`jax_ppo --pretrain 100000`, or `warm_start.samples=100000` in the Hydra config). It starts at 54 passengers (SB3's clone: 57.5), and the recipe then reaches 68.6 ± 1.1 after 5M steps (3 seeds), level with the heuristic's 69.
 - [ ] **Port the target action mode and the `custom` observation to JAX.**
 - [ ] **Profile the JAX env** with `jax.profiler` to find what limits it at about 660k env steps/s; applying the actions is half of each step.
 - [ ] **Try EnvPool's XLA interface,** which lets JAX step EnvPool envs from inside `jit`, as a bridge between Phases 3 and 4.
