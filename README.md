@@ -199,7 +199,7 @@ compared instead.
 
 ```sh
 uv sync                                            # installs nanobind for the binding
-cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release -DPython_EXECUTABLE=.venv/bin/python
+cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release -DPython_EXECUTABLE=$PWD/.venv/bin/python
 cmake --build cpp/build                            # also builds src/elevator_rl/_cpp*.so
 ctest --test-dir cpp/build                         # C++ unit tests
 uv run pytest tests/test_cpp.py tests/test_cpp_env.py   # parity with Python
@@ -223,6 +223,36 @@ not part of the installed package.
 Each floor queue holds at most 512 passengers (the longest seen in Python is
 about 310); extra arrivals are dropped and counted, and the parity tests
 check that none are.
+
+The module needs Python headers. The project pins Python 3.12 (for EnvPool,
+below), and Ubuntu's system 3.12 ships without them, so use uv's own Python:
+`uv sync --python-preference only-managed`.
+
+## EnvPool
+
+[EnvPool](https://github.com/sail-sg/envpool) runs C++ envs on a thread pool.
+It only takes new envs inside its own Bazel build, so `cpp/envpool/` holds
+the elevator env written against EnvPool's `Env` interface, and
+`scripts/build_envpool.sh` checks out EnvPool at a pinned commit, adds the
+env, trims the package to EnvPool's core and builds a wheel. EnvPool needs
+Python 3.12 or later and [bazelisk](https://github.com/bazelbuild/bazelisk)
+(as `bazel`) on the PATH; the first build takes a few minutes.
+
+```sh
+scripts/build_envpool.sh
+uv pip install cpp/build/envpool-dist/envpool-*.whl
+uv run pytest tests/test_envpool_env.py                # step-for-step parity with the C++ env
+uv run python scripts/time_vec_env.py                  # C++ VecEnv vs EnvPool sync/async
+uv run python -m elevator_rl.train --preset full --obs-type relative --vec-env envpool
+```
+
+`uv sync` removes the wheel (it is not in the lockfile), so reinstall it
+afterwards; `uv run` leaves it in place. `elevator_rl.envpool_env.EnvPoolVecEnv`
+adapts the pool to SB3: EnvPool resets a finished env on the following step,
+while SB3 expects the reset on the same step, so the adapter resets finished
+envs straight away in one batched call. Only the `box` and `relative`
+observations are available, because an EnvPool spec fixes the dtype at
+compile time.
 
 ## License
 

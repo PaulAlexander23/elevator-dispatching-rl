@@ -27,7 +27,7 @@ def make_env(
     )
 
 
-VEC_ENVS = ("dummy", "subproc", "cpp")
+VEC_ENVS = ("dummy", "subproc", "cpp", "envpool")
 
 
 def make_vec_env(
@@ -39,13 +39,17 @@ def make_vec_env(
     action_mode="step",
     seed=0,
 ):
-    """`n_envs` training envs: Python in one process, one process each, or C++."""
-    if vec_env == "cpp":
+    """`n_envs` training envs: Python in one process, one process each, C++ in
+    one thread, or C++ on EnvPool's thread pool."""
+    if vec_env in ("cpp", "envpool"):
         if preset is None:
-            raise ValueError("the C++ env is a BuildingEnv: name a preset")
-        from elevator_rl.cpp_env import CppVecEnv
+            raise ValueError(f"the {vec_env} env is a BuildingEnv: name a preset")
+        if vec_env == "cpp":
+            from elevator_rl.cpp_env import CppVecEnv as cls
+        else:
+            from elevator_rl.envpool_env import EnvPoolVecEnv as cls
 
-        return CppVecEnv(
+        return cls(
             preset, n_envs, obs_type, reward_shaping, action_mode=action_mode, seed=seed or 0
         )
     cls = SubprocVecEnv if vec_env == "subproc" else DummyVecEnv
@@ -164,7 +168,10 @@ def cli():
     )
     parser.add_argument("--n-envs", type=int, default=1)
     parser.add_argument(
-        "--vec-env", choices=VEC_ENVS, default="dummy", help="cpp needs the built C++ module"
+        "--vec-env",
+        choices=VEC_ENVS,
+        default="dummy",
+        help="cpp and envpool need the C++ builds (see the README)",
     )
     parser.add_argument("--n-steps", type=int, default=2048, help="rollout steps per env")
     parser.add_argument("--batch-size", type=int, default=64)
