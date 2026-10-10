@@ -572,4 +572,4 @@ Added after Warp:
 
 - [ ] **Profile the JAX PPO's policy and update.** With the Warp env, stepping is only about a tenth of training time, so the learner is the bottleneck again.
 - [ ] **Port the target action mode and the `custom` observation to Warp,** alongside the JAX port.
-- [ ] **Run the Warp tests in CI** on Warp's CPU backend, if the compile time (about a minute per config) is acceptable there.
+- [x] **Run the Warp tests in CI** on Warp's CPU backend, if the compile time (about a minute per config) is acceptable there. Done: on the CPU backend the kernels compile in seconds (LLVM, not NVRTC), and the 13 Warp tests take about 2 minutes from a cold cache. CI installs PyPI's `warp-lang` over the CPU JAX group and caches `~/.cache/warp`.
