@@ -29,7 +29,9 @@ import numpy as np
 import optax
 
 from elevator_rl.building import PRESETS
-from elevator_rl.jax_env import JaxBuildingEnv, make_vec_env
+from elevator_rl.jax_env import JaxBuildingEnv
+
+BACKENDS = ("jax", "warp")
 
 
 class PPOConfig(NamedTuple):
@@ -133,7 +135,7 @@ def make_train(env: JaxBuildingEnv, config: PPOConfig):
         raise ValueError(f"rollout {batch} does not divide into minibatches of {config.batch_size}")
     n_minibatches = batch // config.batch_size
     n_lifts = env.config.n_lifts
-    vec_reset, vec_step = make_vec_env(env, config.n_envs)
+    vec_reset, vec_step = env.make_vec_env(config.n_envs)
     optimizer = make_optimizer(config)
 
     def init(key):
@@ -152,7 +154,11 @@ def make_train(env: JaxBuildingEnv, config: PPOConfig):
         # SB3 does: add the discounted value of the observation it ended on.
         reward = reward + jax.lax.cond(
             done.any(),
-            lambda: config.gamma * policy(params, info["terminal_obs"], n_lifts)[1] * done,
+            # where, not `* done`: terminal_obs is only defined where done (the
+            # Warp env leaves the rest unwritten), and NaN * 0 is NaN.
+            lambda: jnp.where(
+                done, config.gamma * policy(params, info["terminal_obs"], n_lifts)[1], 0.0
+            ),
             lambda: jnp.zeros_like(reward),
         )
         step = Rollout(obs, actions, log_prob(logits, actions), value, reward, done)
@@ -227,7 +233,9 @@ def make_train(env: JaxBuildingEnv, config: PPOConfig):
             "value_loss": vf.mean(),
             "clip_fraction": clip.mean(),
             "episodes": n_done,
-            "mean_return": jnp.where(n_done > 0, (ep["episode_return"] * done).sum() / n_done, 0.0),
+            "mean_return": jnp.where(
+                n_done > 0, jnp.where(done, ep["episode_return"], 0.0).sum() / n_done, 0.0
+            ),
         }
         return runner._replace(params=params, opt_state=opt_state, key=key), metrics
 
@@ -240,7 +248,7 @@ def make_evaluate(env: JaxBuildingEnv, n_episodes):
     `env` should be unshaped, so the return is the delivered count, as
     train.make_eval_env.
     """
-    vec_reset, vec_step = make_vec_env(env, n_episodes)
+    vec_reset, vec_step = env.make_vec_env(n_episodes)
     n_lifts = env.config.n_lifts
 
     def evaluate(params, key):
@@ -268,14 +276,21 @@ def train(
     eval_freq=100_000,
     n_eval_episodes=10,
     verbose=True,
+    backend="jax",
 ):
     """Train and return (params, history); history rows are dicts per eval.
+
+    `backend` picks the env: "jax" (jax_env) or "warp" (warp_env).
 
     Throughput excludes compilation (the first update) and evaluation.
     """
     config = config or PPOConfig()
-    env = JaxBuildingEnv(preset, reward_shaping=reward_shaping, obs_type=obs_type)
-    eval_env = JaxBuildingEnv(preset, reward_shaping=False, obs_type=obs_type)
+    if backend == "warp":
+        from elevator_rl.warp_env import WarpBuildingEnv as env_cls
+    else:
+        env_cls = JaxBuildingEnv
+    env = env_cls(preset, reward_shaping=reward_shaping, obs_type=obs_type)
+    eval_env = env_cls(preset, reward_shaping=False, obs_type=obs_type)
     init, update = make_train(env, config)
     update = jax.jit(update, donate_argnums=0)
     evaluate = jax.jit(make_evaluate(eval_env, n_eval_episodes))
@@ -334,6 +349,7 @@ def main(argv=None):
     parser.add_argument("--net-arch", type=int, nargs="+", default=[256, 256])
     parser.add_argument("--eval-freq", type=int, default=100_000)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--backend", choices=BACKENDS, default="jax", help="env implementation")
     args = parser.parse_args(argv)
     config = PPOConfig(
         n_envs=args.n_envs,
@@ -350,6 +366,7 @@ def main(argv=None):
         config,
         args.obs_type,
         seed=args.seed,
+        backend=args.backend,
         eval_freq=args.eval_freq,
     )
 

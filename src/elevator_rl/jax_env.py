@@ -392,6 +392,10 @@ class JaxBuildingEnv:
 
     # -- env API -------------------------------------------------------------
 
+    def make_vec_env(self, n_envs):
+        """Batched (reset, step) with auto-reset; see the module function."""
+        return make_vec_env(self, n_envs)
+
     def potential(self, state):
         shaping = self.reward_shaping
         if shaping is None or not shaping.progress:

@@ -28,6 +28,7 @@ url = "https://download.pytorch.org/whl/cu126"
 explicit = true
 
 [tool.uv.sources]
+warp-lang = { url = "https://github.com/NVIDIA/warp/releases/download/v1.18.0/warp_lang-1.18.0+cu12-py3-none-manylinux_2_28_x86_64.whl" }
 torch = [
   { index = "pytorch-cpu", group = "cpu" },
   { index = "pytorch-cu126", group = "cuda", marker = "sys_platform != 'darwin'" },
@@ -50,6 +51,13 @@ jax = [
 jax-cuda = [
     { include-group = "jax" },
     "jax[cuda12]>=0.6 ; sys_platform == 'linux'",
+]
+# NVIDIA Warp (warp_env), run through JAX. PyPI's warp-lang is built with CUDA
+# 13, which dropped Pascal (GTX 10xx) GPUs, so this takes the CUDA 12 build
+# from Warp's GitHub release (Linux x86_64 only).
+warp = [
+    { include-group = "jax-cuda" },
+    "warp-lang ; sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
 dev = [
     "nanobind>=3.1.0",
@@ -82,3 +90,7 @@ src = ["src", "tests", "scripts"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# Warp kernels need `int(0)`, not `0`, for a variable a loop changes.
+"src/elevator_rl/warp_env.py" = ["UP018"]

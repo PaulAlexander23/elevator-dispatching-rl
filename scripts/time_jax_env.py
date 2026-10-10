@@ -1,10 +1,10 @@
-"""Benchmark the JAX env's throughput: random actions, all inside one jit.
+"""Benchmark the JAX or Warp env's throughput: random actions, all inside one jit.
 
 Each row runs `--steps` steps of `n_envs` envs as one `lax.scan`, so there
 is no Python in the loop at all. The first call compiles and is not timed.
-Needs the `jax` dependency group (`jax-cuda` for a GPU).
+Needs the `jax` dependency group (`jax-cuda` for a GPU, `warp` for Warp).
 
-    uv run --group jax-cuda python scripts/time_jax_env.py --n-envs 1024 4096 16384
+    uv run --group warp python scripts/time_jax_env.py --backends jax warp --devices gpu
 """
 
 import argparse
@@ -12,11 +12,21 @@ import time
 
 import jax
 
-from elevator_rl.jax_env import JaxBuildingEnv, make_vec_env
+from elevator_rl.jax_env import JaxBuildingEnv
+
+BACKENDS = ("jax", "warp")
+
+
+def make_env(backend, preset, obs_type):
+    if backend == "warp":
+        from elevator_rl.warp_env import WarpBuildingEnv as cls
+    else:
+        cls = JaxBuildingEnv
+    return cls(preset, reward_shaping=True, obs_type=obs_type)
 
 
 def throughput(env, n_envs, steps, device):
-    reset, step = make_vec_env(env, n_envs)
+    reset, step = env.make_vec_env(n_envs)
 
     def run(key):
         vec_state, _ = reset(key)
@@ -43,20 +53,22 @@ def main():
     parser.add_argument("--n-envs", type=int, nargs="+", default=[256, 1024, 4096, 16384])
     parser.add_argument("--steps", type=int, default=400, help="steps per env (2 episodes)")
     parser.add_argument("--devices", nargs="+", default=["gpu", "cpu"])
+    parser.add_argument("--backends", nargs="+", choices=BACKENDS, default=["jax"])
     args = parser.parse_args()
 
-    env = JaxBuildingEnv(args.preset, reward_shaping=True, obs_type=args.obs_type)
-    print("| Device | n_envs | env steps/s |")
-    print("|---|---:|---:|")
-    for name in args.devices:
-        try:
-            device = jax.devices(name)[0]
-        except RuntimeError:
-            print(f"| {name} | - | not available |")
-            continue
-        for n_envs in args.n_envs:
-            rate = throughput(env, n_envs, args.steps, device)
-            print(f"| {name} | {n_envs} | {rate:,.0f} |", flush=True)
+    print("| Backend | Device | n_envs | env steps/s |")
+    print("|---|---|---:|---:|")
+    for backend in args.backends:
+        env = make_env(backend, args.preset, args.obs_type)
+        for name in args.devices:
+            try:
+                device = jax.devices(name)[0]
+            except RuntimeError:
+                print(f"| {backend} | {name} | - | not available |")
+                continue
+            for n_envs in args.n_envs:
+                rate = throughput(env, n_envs, args.steps, device)
+                print(f"| {backend} | {name} | {n_envs} | {rate:,.0f} |", flush=True)
 
 
 if __name__ == "__main__":

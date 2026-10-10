@@ -285,6 +285,30 @@ library on `LD_LIBRARY_PATH` is shadowing the one in JAX's wheel: remove the
 system library directories (`/usr/lib/x86_64-linux-gnu` and friends) from
 `LD_LIBRARY_PATH`, or run with `env -u LD_LIBRARY_PATH`.
 
+## NVIDIA Warp
+
+`elevator_rl.warp_env` is a third GPU port, written as
+[Warp](https://github.com/NVIDIA/warp) kernels: one GPU thread per env,
+running ordinary loops and branches like the C++ port, rather than the masked
+array code of the JAX port. The kernels run inside `jax.jit` through
+`warp.jax_kernel`, so `jax_ppo` trains on either env with `--backend warp`.
+
+```sh
+uv sync --group warp                        # Warp's CUDA 12 build, plus JAX with CUDA
+uv run pytest tests/test_warp_env.py
+uv run python scripts/time_jax_env.py --backends warp jax --devices gpu
+uv run python -m elevator_rl.jax_ppo --backend warp --preset full \
+    --n-envs 16384 --n-steps 8 --batch-size 16384 --timesteps 20000000
+```
+
+On a GTX 1080 the Warp env steps 3.9M env steps/s at 16,384 envs, 5.8x the
+JAX env, and PPO on it runs 363k steps/s, 1.5x PPO on the JAX env. PyPI's
+`warp-lang` is built with CUDA 13, which no longer supports Pascal GPUs, so
+the `warp` group installs the CUDA 12 build from Warp's GitHub release. The
+kernels compile with `fuse_fp` off, for the same rounding reason as the JAX
+and C++ ports; the first build of each configuration takes about a minute
+(Warp caches it in `~/.cache/warp`).
+
 ## License
 
 [MIT](LICENSE)
