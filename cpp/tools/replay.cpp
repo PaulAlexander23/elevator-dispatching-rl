@@ -7,6 +7,7 @@
 #include <fstream>
 #include <memory>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -66,23 +67,54 @@ struct Reader {
              std::to_string(custom[i]));
       }
     }
-    expect("box", rest);
-    std::vector<float> box(env.observation_size(ObsType::Box));
-    env.observe_box(box.data());
-    for (size_t i = 0; i < box.size(); ++i) {
+    std::string extra;
+    if (rest >> extra) fail("custom observation too long");
+    check_floats("box", ObsType::Box, env, rest);
+    check_floats("relative", ObsType::Relative, env, rest);
+  }
+
+  void check_floats(const char* tag, ObsType type, const Env& env, std::istringstream& rest) {
+    expect(tag, rest);
+    std::vector<float> values(env.observation_size(type));
+    if (type == ObsType::Box) env.observe_box(values.data());
+    else env.observe_relative(values.data());
+    for (size_t i = 0; i < values.size(); ++i) {
       std::string token;
-      if (!(rest >> token)) fail("box observation too short");
+      if (!(rest >> token)) fail(std::string(tag) + " observation too short");
       // The trace holds the float32 value as an exact double.
       float want = float(std::strtod(token.c_str(), nullptr));
-      if (want != box[i]) {
+      if (want != values[i]) {
         char message[128];
-        std::snprintf(message, sizeof(message), "box[%zu]: python %.9g, c++ %.9g", i, want,
-                      box[i]);
+        std::snprintf(message, sizeof(message), "%s[%zu]: python %.9g, c++ %.9g", tag, i, want,
+                      values[i]);
         fail(message);
       }
     }
+    std::string extra;
+    if (rest >> extra) fail(std::string(tag) + " observation too long");
   }
 };
+
+EnvOptions parse_env_line(std::istringstream& rest) {
+  EnvOptions options;
+  std::string token;
+  while (rest >> token) {
+    auto eq = token.find('=');
+    std::string key = token.substr(0, eq), value = token.substr(eq + 1);
+    if (key == "shaped") options.shaped = std::stoi(value) != 0;
+    else if (key == "pickup") options.shaping.pickup = std::stod(value);
+    else if (key == "empty_serve") options.shaping.empty_serve = std::stod(value);
+    else if (key == "progress") options.shaping.progress = std::stod(value);
+    else if (key == "waiting") options.shaping.waiting = std::stod(value);
+    else if (key == "gamma") options.shaping.gamma = std::stod(value);
+    else if (key == "max_steps") options.max_steps = std::stoi(value);
+    else if (key == "action_mode") {
+      options.action_mode = value == "target" ? ActionMode::Target : ActionMode::Step;
+    } else if (key == "observe_direction") options.observe_direction = std::stoi(value) != 0;
+    else throw std::invalid_argument("unknown env key: " + key);
+  }
+  return options;
+}
 
 long replay(const char* path) {
   Reader r;
@@ -100,13 +132,7 @@ long replay(const char* path) {
   }
 
   r.expect("env", rest);
-  int shaping = 0, max_steps = 0;
-  std::string token;
-  while (rest >> token) {
-    if (token.rfind("reward_shaping=", 0) == 0) shaping = std::stoi(token.substr(15));
-    if (token.rfind("max_steps=", 0) == 0) max_steps = std::stoi(token.substr(10));
-  }
-  Env env(config, shaping != 0, max_steps);
+  Env env(config, parse_env_line(rest));
 
   long steps = 0;
   std::string tag;

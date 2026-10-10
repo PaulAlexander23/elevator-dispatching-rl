@@ -26,7 +26,7 @@ constexpr int kMaxQueue = 512;
 enum class Traffic { Uniform, UpPeak, DownPeak, Lunch, Day };
 enum Status { kIdle = 0, kMoving = 1, kDoors = 2 };
 enum Action { kUp = 0, kDown = 1, kServe = 2, kServeUp = 2, kServeDown = 3 };
-enum class ObsType { Custom, Box };
+enum class ObsType { Custom, Box, Relative };
 
 struct Config {
   int n_floors = 10;
@@ -140,6 +140,30 @@ class Sim {
   std::vector<double> joint_;
 };
 
+// Training-only reward terms, as building_env.Shaping.
+struct Shaping {
+  double pickup = 1.0;
+  double empty_serve = 0.5;
+  double progress = 0.0;
+  double waiting = 0.0;
+  double gamma = 0.99;
+};
+
+enum class ActionMode { Step, Target };
+
+// The BuildingEnv constructor arguments other than the config.
+struct EnvOptions {
+  bool shaped = false;  // false = reward is passengers delivered only
+  Shaping shaping{};
+  int max_steps = 200;
+  ActionMode action_mode = ActionMode::Step;
+  bool observe_direction = false;
+};
+
+// Per-lift and per-floor-offset widths of the relative observation.
+constexpr int kRelativeLiftFields = 10;
+constexpr int kRelativeFloorFields = 5;
+
 struct EnvStep {
   double reward = 0.0;
   bool truncated = false;
@@ -149,27 +173,42 @@ struct EnvStep {
 
 class Env {
  public:
-  Env(const Config& config, bool reward_shaping = false, int max_steps = 200);
+  explicit Env(const Config& config, const EnvOptions& options = EnvOptions{});
 
   // Resets and runs the 10 warm-up arrival rounds. With `warmup` (10 rounds),
   // those arrivals are used instead of drawing them, to replay a trace.
   void reset(uint64_t seed, const std::vector<std::vector<Arrival>>* warmup = nullptr);
-  // `actions` holds one action per lift. With `arrivals`, they replace the draw.
+  // `actions` holds one action per lift (a target per lift in target mode).
+  // With `arrivals`, they replace the draw.
   EnvStep step(const int* actions, const std::vector<Arrival>* arrivals = nullptr);
 
   int observation_size(ObsType type) const;
+  int n_actions_per_lift() const;
   void observe_custom(int64_t* out) const;
   void observe_box(float* out) const;
+  void observe_relative(float* out) const;
 
   const Sim& sim() const { return sim_; }
   Sim& sim() { return sim_; }
+  const EnvOptions& options() const { return options_; }
   int steps() const { return steps_; }
 
  private:
+  struct Goal {
+    bool set = false;
+    int floor = 0;
+    int direction = 1;
+  };
+  void primitive_actions(const int* actions, int* out);
+  double potential() const;
+  int extra_fields() const;  // free flags and directions at the end of custom/box
+
   Sim sim_;
-  bool reward_shaping_;
-  int max_steps_;
+  EnvOptions options_;
   int steps_ = 0;
+  double last_potential_ = 0.0;
+  std::array<Goal, kMaxLifts> goals_{};
+  std::array<int, kMaxLifts> directions_{};
   std::vector<Arrival> arrivals_;
 };
 

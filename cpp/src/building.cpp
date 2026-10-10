@@ -437,9 +437,11 @@ void Sim::integrate(Lift& lift) {
 }
 
 // --- Env ---------------------------------------------------------------------
+//
+// Mirrors BuildingEnv in building_env.py, including the order of floating
+// point operations in the reward and observations, so results are identical.
 
-Env::Env(const Config& config, bool reward_shaping, int max_steps)
-    : sim_(config), reward_shaping_(reward_shaping), max_steps_(max_steps) {
+Env::Env(const Config& config, const EnvOptions& options) : sim_(config), options_(options) {
   arrivals_.reserve(kMaxFloors * 8);
 }
 
@@ -447,6 +449,8 @@ void Env::reset(uint64_t seed, const std::vector<std::vector<Arrival>>* warmup) 
   sim_.seed(seed);
   sim_.reset();
   steps_ = 0;
+  goals_.fill(Goal{});
+  directions_.fill(0);
   for (int round = 0; round < 10; ++round) {
     if (warmup) {
       sim_.add_arrivals(warmup->at(round));
@@ -455,39 +459,125 @@ void Env::reset(uint64_t seed, const std::vector<std::vector<Arrival>>* warmup) 
       sim_.add_arrivals(arrivals_);
     }
   }
+  last_potential_ = potential();
+}
+
+int Env::n_actions_per_lift() const {
+  const Config& c = sim_.config();
+  if (options_.action_mode == ActionMode::Target) return c.n_floors * (c.hall_calls ? 2 : 1);
+  return c.n_actions();
+}
+
+void Env::primitive_actions(const int* actions, int* out) {
+  const Config& c = sim_.config();
+  const int n = c.n_floors;
+  for (int i = 0; i < c.n_lifts; ++i) {
+    const Lift& lift = sim_.lift(i);
+    Goal& goal = goals_[i];
+    if (!goal.set) {
+      goal.set = true;
+      goal.floor = actions[i] % n;
+      goal.direction = c.hall_calls && actions[i] >= n ? -1 : 1;
+    }
+    const int serve = c.hall_calls ? (goal.direction > 0 ? kServeUp : kServeDown) : kServe;
+    const Status status = lift.status();
+    if (status == kDoors) {
+      out[i] = serve;  // ignored until the doors close
+    } else if (status == kMoving) {
+      // Ask to carry on while the goal lies beyond the current target.
+      const int heading = lift.target > lift.position ? kUp : kDown;
+      const bool beyond = (goal.floor - lift.target) * (heading == kUp ? 1 : -1) > 0;
+      out[i] = beyond ? heading : serve;
+    } else if (lift.floor() != goal.floor) {
+      out[i] = goal.floor > lift.floor() ? kUp : kDown;
+    } else {
+      out[i] = serve;
+    }
+  }
+}
+
+double Env::potential() const {
+  if (!options_.shaped || options_.shaping.progress == 0) return 0.0;
+  const Config& c = sim_.config();
+  double remaining = 0.0;
+  for (int i = 0; i < c.n_lifts; ++i) {
+    const Lift& lift = sim_.lift(i);
+    for (int p = 0; p < lift.n_passengers; ++p) {
+      remaining += std::abs(lift.passengers[p] - lift.position);
+    }
+  }
+  return -options_.shaping.progress * remaining / (c.n_floors - 1);
 }
 
 EnvStep Env::step(const int* actions, const std::vector<Arrival>* arrivals) {
+  const Config& c = sim_.config();
   if (arrivals) {
     sim_.add_arrivals(*arrivals);
   } else {
-    sim_.draw_arrivals(double(steps_) / max_steps_, arrivals_);
+    sim_.draw_arrivals(double(steps_) / options_.max_steps, arrivals_);
     sim_.add_arrivals(arrivals_);
   }
-  StepResult r = sim_.apply_actions(actions);
+  std::array<double, kMaxLifts> before{};
+  for (int i = 0; i < c.n_lifts; ++i) before[i] = sim_.lift(i).position;
+
+  StepResult r;
+  if (options_.action_mode == ActionMode::Target) {
+    int primitive[kMaxLifts];
+    primitive_actions(actions, primitive);
+    r = sim_.apply_actions(primitive);
+    for (int i = 0; i < c.n_lifts; ++i) {
+      if (r.served[i] && primitive[i] != kUp && primitive[i] != kDown) goals_[i].set = false;
+    }
+  } else {
+    r = sim_.apply_actions(actions);
+  }
+  for (int i = 0; i < c.n_lifts; ++i) {
+    double position = sim_.lift(i).position;
+    if (position != before[i]) directions_[i] = position > before[i] ? 1 : -1;
+  }
 
   EnvStep out;
   int empty_serves = 0;
-  for (int i = 0; i < sim_.config().n_lifts; ++i) {
+  for (int i = 0; i < c.n_lifts; ++i) {
     out.delivered += r.delivered[i];
     out.boarded += r.boarded[i];
     empty_serves += r.served[i] && r.delivered[i] == 0 && r.boarded[i] == 0;
   }
   out.reward = double(out.delivered);
-  if (reward_shaping_) {
-    out.reward += out.boarded;
-    out.reward -= 0.5 * empty_serves;
+  if (options_.shaped) {
+    const Shaping& s = options_.shaping;
+    if (s.pickup != 0) out.reward += s.pickup * out.boarded;
+    if (s.empty_serve != 0) out.reward -= s.empty_serve * empty_serves;
+    if (s.progress != 0) {
+      double now = potential();
+      out.reward += s.gamma * now - last_potential_;
+      last_potential_ = now;
+    }
+    if (s.waiting != 0) {
+      long waiting = 0;
+      for (int f = 0; f < c.n_floors; ++f) waiting += sim_.queue(f).size;
+      out.reward -= s.waiting * waiting / c.n_floors;
+    }
   }
   ++steps_;
-  out.truncated = steps_ >= max_steps_;
+  out.truncated = steps_ >= options_.max_steps;
   return out;
+}
+
+int Env::extra_fields() const {
+  const int lifts = sim_.config().n_lifts;
+  return (options_.action_mode == ActionMode::Target ? lifts : 0) +
+         (options_.observe_direction ? lifts : 0);
 }
 
 int Env::observation_size(ObsType type) const {
   const Config& c = sim_.config();
+  if (type == ObsType::Relative) {
+    return c.n_lifts * (kRelativeLiftFields + (2 * c.n_floors - 1) * kRelativeFloorFields);
+  }
   int lift_fields = c.kinematics ? 4 : (type == ObsType::Custom ? 2 : 1);
   int waiting = (c.hall_calls ? 2 : 1) * c.n_floors;
-  return c.n_lifts * lift_fields + waiting + c.n_lifts * c.n_floors;
+  return c.n_lifts * lift_fields + waiting + c.n_lifts * c.n_floors + extra_fields();
 }
 
 namespace {
@@ -533,6 +623,12 @@ void Env::observe_custom(int64_t* out) const {
     for (int p = 0; p < lift.n_passengers; ++p) ++wanted[lift.passengers[p]];
     k += c.n_floors;
   }
+  if (options_.action_mode == ActionMode::Target) {
+    for (int i = 0; i < c.n_lifts; ++i) out[k++] = !goals_[i].set;
+  }
+  if (options_.observe_direction) {
+    for (int i = 0; i < c.n_lifts; ++i) out[k++] = directions_[i] == -1 ? 2 : directions_[i];
+  }
 }
 
 void Env::observe_box(float* out) const {
@@ -558,6 +654,68 @@ void Env::observe_box(float* out) const {
     const Lift& lift = sim_.lift(i);
     for (int p = 0; p < lift.n_passengers; ++p) wanted[lift.passengers[p]] = 1.0f;
     k += n;
+  }
+  if (options_.action_mode == ActionMode::Target) {
+    for (int i = 0; i < c.n_lifts; ++i) out[k++] = goals_[i].set ? 0.0f : 1.0f;
+  }
+  if (options_.observe_direction) {
+    for (int i = 0; i < c.n_lifts; ++i) out[k++] = float(directions_[i]);
+  }
+}
+
+void Env::observe_relative(float* out) const {
+  // Float32 arithmetic where Python uses float32 NumPy arrays, double where
+  // it uses Python floats, so the values match exactly.
+  const Config& c = sim_.config();
+  const int n = c.n_floors;
+  const float cap = float(c.lift_capacity);
+  int waiting[2 * kMaxFloors];
+  waiting_counts(sim_, waiting);
+  float up[kMaxFloors], down[kMaxFloors], lifts_at[kMaxFloors] = {};
+  for (int f = 0; f < n; ++f) {
+    up[f] = std::min(float(waiting[f]) / cap, 1.0f);
+    down[f] = c.hall_calls ? std::min(float(waiting[n + f]) / cap, 1.0f) : up[f];
+  }
+  for (int i = 0; i < c.n_lifts; ++i) lifts_at[sim_.lift(i).floor()] += 1.0f;
+  const float other_lifts = float(std::max(c.n_lifts - 1, 1));
+  const double speed = c.max_speed / c.floor_height;
+  const int window = 2 * n - 1;
+
+  float* block = out;
+  for (int i = 0; i < c.n_lifts; ++i) {
+    const Lift& lift = sim_.lift(i);
+    const Status status = lift.status();
+    const bool free = options_.action_mode != ActionMode::Target || !goals_[i].set;
+    float* head = block;
+    head[0] = float(lift.position / (n - 1));
+    head[1] = float(double(lift.n_passengers) / c.lift_capacity);
+    head[2] = float(directions_[i]);
+    head[3] = status == kIdle;
+    head[4] = status == kMoving;
+    head[5] = status == kDoors;
+    head[6] = float((lift.target - lift.position) / (n - 1));
+    head[7] = float(lift.velocity / speed);
+    head[8] = c.kinematics ? float(lift.door_timer / c.door_time) : 0.0f;
+    head[9] = free;
+
+    int wanted[kMaxFloors] = {};
+    for (int p = 0; p < lift.n_passengers; ++p) ++wanted[lift.passengers[p]];
+    const int floor = lift.floor();
+    float* cells = block + kRelativeLiftFields;
+    for (int j = 0; j < window; ++j) {
+      float* cell = cells + j * kRelativeFloorFields;
+      const int g = floor + j - (n - 1);
+      if (g < 0 || g >= n) {
+        std::fill(cell, cell + kRelativeFloorFields, 0.0f);
+        continue;
+      }
+      cell[0] = 1.0f;
+      cell[1] = std::min(float(wanted[g]) / cap, 1.0f);
+      cell[2] = up[g];
+      cell[3] = down[g];
+      cell[4] = (lifts_at[g] - (g == floor ? 1.0f : 0.0f)) / other_lifts;
+    }
+    block += kRelativeLiftFields + window * kRelativeFloorFields;
   }
 }
 

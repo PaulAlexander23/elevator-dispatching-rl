@@ -44,7 +44,9 @@ int main(int argc, char** argv) {
     return 0;
   }
 
-  Env env(config, /*reward_shaping=*/false, max_steps);
+  EnvOptions options;
+  options.max_steps = max_steps;
+  Env env(config, options);
   Rng policy(seed ^ 0xabcdefULL);
   std::vector<int> actions(config.n_lifts);
   std::vector<int64_t> obs(env.observation_size(ObsType::Custom));

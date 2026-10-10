@@ -166,7 +166,9 @@ void test_floor_rounds_half_to_even() {
 }
 
 void test_env_reset_is_reproducible() {
-  Env a(preset("full"), true), b(preset("full"), true);
+  EnvOptions options;
+  options.shaped = true;
+  Env a(preset("full"), options), b(preset("full"), options);
   a.reset(11);
   b.reset(11);
   std::vector<int64_t> oa(a.observation_size(ObsType::Custom)), ob(oa.size());

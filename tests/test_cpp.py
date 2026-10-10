@@ -41,10 +41,22 @@ def bench(preset, **options):
     return {key: value for key, value in pairs}
 
 
+ENV_OPTIONS = {
+    "step": {},
+    "target": {
+        "reward_shaping": "progress_waiting",
+        "action_mode": "target",
+        "observe_direction": True,
+    },
+}
+
+
+@pytest.mark.parametrize("options", ENV_OPTIONS)
 @pytest.mark.parametrize("preset", PRESETS)
-def test_cpp_replays_python_traces_exactly(preset, tmp_path):
+def test_cpp_replays_python_traces_exactly(preset, options, tmp_path):
     path = tmp_path / f"{preset}.trace"
-    path.write_text("\n".join(trace.record(PRESETS[preset], n_steps=1500, seed=3)) + "\n")
+    lines = trace.record(PRESETS[preset], n_steps=1500, seed=3, **ENV_OPTIONS[options])
+    path.write_text("\n".join(lines) + "\n")
     assert "1500 steps match" in run(REPLAY, path)
 
 
