@@ -4,6 +4,10 @@ Applying reinforcement learning to a lift (elevator) controller, using a
 [Gymnasium](https://gymnasium.farama.org/) environment and PPO from
 [Stable-Baselines3](https://stable-baselines3.readthedocs.io/).
 
+The env also has C++, EnvPool, JAX and NVIDIA Warp ports, built to learn how
+far a Python env and its training loop can be accelerated. [docs/](docs/README.md)
+has the plan, each phase's results and the setup notes.
+
 ## Setup
 
 The project is managed with [uv](https://docs.astral.sh/uv/):
