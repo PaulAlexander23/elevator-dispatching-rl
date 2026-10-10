@@ -197,18 +197,22 @@ def main(argv=None):
     for device, threads, vec_env, batch_size, n_envs in configs:
         torch.set_num_threads(threads)
         for seed in range(args.repeats):
-            run = run_one(
-                args.preset,
-                n_envs,
-                batch_size,
-                args.rollout,
-                args.timesteps,
-                vec_env,
-                seed,
-                args.obs_type,
-                args.net_arch,
-                device,
-            )
+            try:
+                run = run_one(
+                    args.preset,
+                    n_envs,
+                    batch_size,
+                    args.rollout,
+                    args.timesteps,
+                    vec_env,
+                    seed,
+                    args.obs_type,
+                    args.net_arch,
+                    device,
+                )
+            except ValueError as e:  # e.g. more subprocesses than memory allows
+                print(f"skipped {vec_env} n_envs={n_envs}: {e}", flush=True)
+                break
             runs.append(run)
             print(
                 f"{device} threads={threads} {vec_env} n_envs={n_envs} batch={batch_size} "

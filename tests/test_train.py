@@ -53,3 +53,12 @@ def test_main_smoke_with_imitation(tmp_path):
         pretrain=400,
     )
     assert save_path.exists()
+
+
+def test_subproc_envs_are_capped_by_memory(monkeypatch):
+    from elevator_rl import train
+
+    assert train.max_subproc_envs(32 * 2**30) == 98  # a 32 GB machine
+    monkeypatch.setattr(train, "max_subproc_envs", lambda: 4)
+    with pytest.raises(ValueError, match="fits about 4"):
+        train.make_vec_env(8, "subproc")
