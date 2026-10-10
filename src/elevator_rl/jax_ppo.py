@@ -17,6 +17,9 @@ for `TimeLimit.truncated`.
 
     uv run --group jax-cuda python -m elevator_rl.jax_ppo --preset full \\
         --n-envs 1024 --n-steps 8 --batch-size 2048 --timesteps 5000000
+
+With `--pretrain N` it first imitates the collective heuristic on N samples
+(`jax_imitate`), as the SB3 recipe for `full` does.
 """
 
 import argparse
@@ -138,9 +141,11 @@ def make_train(env: JaxBuildingEnv, config: PPOConfig):
     vec_reset, vec_step = env.make_vec_env(config.n_envs)
     optimizer = make_optimizer(config)
 
-    def init(key):
+    def init(key, params=None):
+        """`params` starts from given weights (e.g. a warm start) instead of fresh ones."""
         k_params, k_env, k_run = jax.random.split(key, 3)
-        params = init_params(k_params, env, config)
+        if params is None:
+            params = init_params(k_params, env, config)
         vec_state, obs = vec_reset(k_env)
         return Runner(params, optimizer.init(params), vec_state, obs, k_run)
 
@@ -278,12 +283,14 @@ def train(
     verbose=True,
     backend="jax",
     callback=None,
+    params=None,
 ):
     """Train and return (params, history); history rows are dicts per eval.
 
     `backend` picks the env: "jax" (jax_env) or "warp" (warp_env).
     `callback(row)` runs after each eval; returning True stops training early
-    (the hyperparameter search uses it to prune).
+    (the hyperparameter search uses it to prune). `params` starts PPO from
+    given weights, such as `jax_imitate.warm_start`'s.
 
     Throughput excludes compilation (the first update) and evaluation.
     """
@@ -298,16 +305,31 @@ def train(
     update = jax.jit(update, donate_argnums=0)
     evaluate = jax.jit(make_evaluate(eval_env, n_eval_episodes))
     key = jax.random.key(seed)
-    runner = init(key)
+    runner = init(key, params)
     per_update = config.n_envs * config.n_steps
     n_updates = max(total_timesteps // per_update, 1)
     eval_every = max(eval_freq // per_update, 1)
+    history = []
+    if params is not None:  # record where the warm start begins
+        rewards = np.asarray(evaluate(runner.params, jax.random.fold_in(key, 0)))
+        history.append(
+            {
+                "timesteps": 0,
+                "seconds": 0.0,
+                "steps_per_second": 0.0,
+                "eval_mean": float(rewards.mean()),
+                "eval_std": float(rewards.std()),
+                "train_return": None,
+            }
+        )
+        if verbose:
+            print(f"start: eval {rewards.mean():6.1f} ± {rewards.std():4.1f}", flush=True)
 
     t0 = time.perf_counter()
     runner, metrics = update(runner)
     jax.block_until_ready(metrics)
     compile_seconds = time.perf_counter() - t0
-    train_seconds, history = 0.0, []
+    train_seconds = 0.0
     for i in range(1, n_updates):
         t0 = time.perf_counter()
         runner, metrics = update(runner)
@@ -355,6 +377,12 @@ def main(argv=None):
     parser.add_argument("--eval-freq", type=int, default=100_000)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--backend", choices=BACKENDS, default="jax", help="env implementation")
+    parser.add_argument(
+        "--pretrain",
+        type=int,
+        default=0,
+        help="imitate the collective heuristic on this many samples first",
+    )
     args = parser.parse_args(argv)
     config = PPOConfig(
         n_envs=args.n_envs,
@@ -365,6 +393,13 @@ def main(argv=None):
         net_arch=tuple(args.net_arch),
     )
     print(f"devices: {jax.devices()}")
+    params = None
+    if args.pretrain:
+        from elevator_rl.jax_imitate import warm_start
+
+        env = JaxBuildingEnv(args.preset, obs_type=args.obs_type)
+        params, stats = warm_start(env, args.preset, config, args.pretrain, seed=args.seed)
+        print(f"imitation: mean log-likelihood {stats['log_likelihood']:.3f}")
     return train(
         args.preset,
         args.timesteps,
@@ -373,6 +408,7 @@ def main(argv=None):
         seed=args.seed,
         backend=args.backend,
         eval_freq=args.eval_freq,
+        params=params,
     )
 
 
