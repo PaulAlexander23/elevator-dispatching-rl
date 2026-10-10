@@ -134,6 +134,16 @@ uv run python scripts/time_env.py --preset full
 uv run python scripts/time_ppo.py --preset full
 ```
 
+To see where PPO's time goes as training is parallelised, sweep the number of
+envs and the batch size. Each run reports PPO steps/s and the share of time
+spent stepping envs, in policy forward passes and SB3 bookkeeping, and in the
+gradient update:
+
+```sh
+uv run python -m elevator_rl.sweep --preset full --n-envs 1 4 16 64 \
+    --batch-sizes 64 512 --vec-envs dummy subproc --repeats 2
+```
+
 ## License
 
 [MIT](LICENSE)
