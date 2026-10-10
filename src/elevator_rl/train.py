@@ -68,6 +68,7 @@ def make_model(
     net_arch=None,
     learning_rate=3e-4,
     vec_env="dummy",
+    device="cpu",
 ):
     """PPO on a training env; shaping only affects training, not evaluation.
 
@@ -77,7 +78,7 @@ def make_model(
     return PPO(
         "MlpPolicy",
         envs,
-        device="cpu",
+        device=device,
         verbose=verbose,
         n_epochs=3,
         n_steps=n_steps,
@@ -111,6 +112,7 @@ def main(
     learning_rate=3e-4,
     pretrain=0,
     vec_env="dummy",
+    device="cpu",
 ):
     """Train PPO and save it. With `pretrain`, first imitate the collective
     heuristic on that many samples (BuildingEnv presets, step actions only)."""
@@ -126,6 +128,7 @@ def main(
         net_arch=net_arch,
         learning_rate=learning_rate,
         vec_env=vec_env,
+        device=device,
     )
     if pretrain:
         if preset is None or action_mode != "step":
@@ -190,6 +193,9 @@ def cli():
         default="step",
         help="for --preset: one floor per action, or a target floor per lift",
     )
+    parser.add_argument(
+        "--device", default="cpu", help="torch device: cuda pays off with --batch-size 512+"
+    )
     args = parser.parse_args()
     main(
         total_timesteps=args.timesteps,
@@ -206,6 +212,7 @@ def cli():
         learning_rate=args.learning_rate,
         pretrain=args.pretrain,
         vec_env=args.vec_env,
+        device=args.device,
     )
 
 

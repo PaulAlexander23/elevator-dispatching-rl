@@ -12,6 +12,7 @@ changes between runs. One rollout is run first as a warm-up and not timed.
 """
 
 import argparse
+import itertools
 import json
 import platform
 import statistics
@@ -81,6 +82,7 @@ def run_one(
     seed=0,
     obs_type="custom",
     net_arch=None,
+    device="cpu",
 ):
     """Train once and return throughput and the time split. Runs one config."""
     n_steps = rollout // n_envs
@@ -91,7 +93,7 @@ def run_one(
     model = PPO(
         "MlpPolicy",
         envs,
-        device="cpu",
+        device=device,
         verbose=0,
         n_epochs=3,
         n_steps=n_steps,
@@ -110,6 +112,8 @@ def run_one(
     steps = model.num_timesteps - start_steps
     envs.close()
 
+    import torch
+
     env = envs.seconds
     return {
         "preset": preset,
@@ -117,6 +121,8 @@ def run_one(
         "n_envs": n_envs,
         "n_steps": n_steps,
         "batch_size": batch_size,
+        "device": device,
+        "torch_threads": torch.get_num_threads(),
         "seed": seed,
         "steps": steps,
         "steps_per_second": steps / total,
@@ -129,7 +135,7 @@ def run_one(
 def summarise(runs):
     """Mean (and spread of the throughput) over seeds for each config."""
     rows = []
-    keys = ("vec_env", "n_envs", "batch_size")
+    keys = ("vec_env", "n_envs", "batch_size", "device", "torch_threads")
     for config in dict.fromkeys(tuple(run[k] for k in keys) for run in runs):
         group = [run for run in runs if tuple(run[k] for k in keys) == config]
         row = dict(zip(keys, config, strict=True))
@@ -146,17 +152,19 @@ def markdown_table(rows, settings):
     lines = [
         f"_{settings['date']}: preset `{settings['preset']}`, rollout {settings['rollout']:,} "
         f"steps, {settings['timesteps']:,} timed steps x {settings['repeats']} repeat(s), "
-        f"{settings['torch_threads']} torch thread(s), {settings['machine']}._",
+        f"{settings['machine']}._",
         "",
-        "| VecEnv | n_envs | Batch | PPO steps/s | Env | Policy + SB3 | Update |",
-        "|---|---:|---:|---:|---:|---:|---:|",
+        "| VecEnv | n_envs | Batch | Device | Threads | PPO steps/s "
+        "| Env | Policy + SB3 | Update |",
+        "|---|---:|---:|---|---:|---:|---:|---:|---:|",
     ]
     for row in rows:
         speed = f"{row['steps_per_second']:,.0f}"
         if row["repeats"] > 1:
             speed += f" ± {row['steps_per_second_std']:,.0f}"
         lines.append(
-            f"| {row['vec_env']} | {row['n_envs']} | {row['batch_size']} | {speed} "
+            f"| {row['vec_env']} | {row['n_envs']} | {row['batch_size']} | {row['device']} "
+            f"| {row['torch_threads']} | {speed} "
             f"| {row['env_share']:.0%} | {row['policy_share']:.0%} | {row['update_share']:.0%} |"
         )
     return "\n".join(lines)
@@ -174,36 +182,40 @@ def main(argv=None):
     parser.add_argument("--timesteps", type=int, default=50_000, help="timed steps per run")
     parser.add_argument("--repeats", type=int, default=1, help="seeds per config")
     parser.add_argument(
-        "--torch-threads", type=int, default=1, help="1 is usually fastest for small MLPs"
+        "--torch-threads", type=int, nargs="+", default=[1], help="torch CPU threads to try"
     )
+    parser.add_argument("--devices", nargs="+", default=["cpu"], help="torch devices to try")
     parser.add_argument("--json", help="also save the raw per-run results here")
     args = parser.parse_args(argv)
 
     import torch
 
-    torch.set_num_threads(args.torch_threads)
     runs = []
-    for vec_env in args.vec_envs:
-        for batch_size in args.batch_sizes:
-            for n_envs in args.n_envs:
-                for seed in range(args.repeats):
-                    run = run_one(
-                        args.preset,
-                        n_envs,
-                        batch_size,
-                        args.rollout,
-                        args.timesteps,
-                        vec_env,
-                        seed,
-                        args.obs_type,
-                        args.net_arch,
-                    )
-                    runs.append(run)
-                    print(
-                        f"{vec_env} n_envs={n_envs} batch={batch_size} seed={seed}: "
-                        f"{run['steps_per_second']:,.0f} steps/s, env {run['env_share']:.0%}",
-                        flush=True,
-                    )
+    configs = itertools.product(
+        args.devices, args.torch_threads, args.vec_envs, args.batch_sizes, args.n_envs
+    )
+    for device, threads, vec_env, batch_size, n_envs in configs:
+        torch.set_num_threads(threads)
+        for seed in range(args.repeats):
+            run = run_one(
+                args.preset,
+                n_envs,
+                batch_size,
+                args.rollout,
+                args.timesteps,
+                vec_env,
+                seed,
+                args.obs_type,
+                args.net_arch,
+                device,
+            )
+            runs.append(run)
+            print(
+                f"{device} threads={threads} {vec_env} n_envs={n_envs} batch={batch_size} "
+                f"seed={seed}: {run['steps_per_second']:,.0f} steps/s, "
+                f"env {run['env_share']:.0%}",
+                flush=True,
+            )
 
     settings = {
         "date": date.today().isoformat(),
@@ -213,7 +225,6 @@ def main(argv=None):
         "rollout": args.rollout,
         "timesteps": args.timesteps,
         "repeats": args.repeats,
-        "torch_threads": args.torch_threads,
         "machine": f"{platform.system()} {platform.machine()}, Python {platform.python_version()}",
     }
     table = markdown_table(summarise(runs), settings)

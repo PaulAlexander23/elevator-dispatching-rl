@@ -172,6 +172,14 @@ uv run python -m elevator_rl.sweep --preset full --n-envs 1 4 16 64 \
     --batch-sizes 64 512 --vec-envs dummy subproc --repeats 2
 ```
 
+`--torch-threads 1 8` and `--devices cpu cuda` also sweep the learner. On an
+8-core CPU, 8 threads is fastest (16 hyperthreads is slower). A GPU only
+helps with large minibatches (512+), and then the env's speed matters again:
+with `--vec-env cpp`, 1024 envs and minibatch 2048, a GTX 1080 runs about
+50k PPO steps/s, against 4.5k with the Python envs. `train.py --device cuda`
+trains on the GPU. The project's lockfile pins the CPU build of torch, so a
+CUDA build has to be installed separately.
+
 ## C++ port
 
 `cpp/` is a C++17 port of `BuildingSim` and `BuildingEnv` with fixed-size
