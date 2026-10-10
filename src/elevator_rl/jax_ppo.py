@@ -298,21 +298,16 @@ def train(
 ):
     """Train and return (params, history); history rows are dicts per eval.
 
-    `backend` picks the env: "jax" (jax_env) or "warp" (warp_env, step
-    actions and the "box" and "relative" observations only).
+    `backend` picks the env: "jax" (jax_env) or "warp" (warp_env).
 
     Throughput excludes compilation (the first update) and evaluation.
     """
     config = config or PPOConfig()
-    options = {"obs_type": obs_type}
+    options = {"obs_type": obs_type, "action_mode": action_mode}
     if backend == "warp":
         from elevator_rl.warp_env import WarpBuildingEnv as env_cls
-
-        if action_mode != "step":
-            raise ValueError("the Warp env has step actions only")
     else:
         env_cls = JaxBuildingEnv
-        options["action_mode"] = action_mode
     env = env_cls(preset, reward_shaping=reward_shaping, **options)
     eval_env = env_cls(preset, reward_shaping=False, **options)
     init, update = make_train(env, config)

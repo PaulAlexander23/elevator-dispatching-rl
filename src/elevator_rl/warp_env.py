@@ -21,7 +21,7 @@ rounds differently from Python.
 
 Differences from `jax_env`: random arrivals come from Warp's per-thread
 generator (statistically the same, not the same draws), and a step's Poisson
-count is not capped. Ported: step actions, "box" and "relative" observations.
+count is not capped. Ported: both action modes and all three observations.
 Needs the `warp` dependency group and a CUDA GPU (or Warp's CPU backend).
 """
 
@@ -33,9 +33,9 @@ import warp as wp
 from elevator_rl.building import _DAY_KEYFRAMES, _PROFILE_WEIGHTS, PRESETS, BuildingConfig
 from elevator_rl.building import _traffic_patterns as traffic_patterns
 from elevator_rl.building_env import RELATIVE_FLOOR_FIELDS, RELATIVE_LIFT_FIELDS, SHAPINGS
-from elevator_rl.jax_env import MAX_QUEUE, OBS_TYPES, WARMUP_ROUNDS, Arrivals
+from elevator_rl.jax_env import MAX_QUEUE, WARMUP_ROUNDS, Arrivals, JaxBuildingEnv
 
-UP, DOWN, SERVE_UP = 0, 1, 2
+UP, DOWN, SERVE_UP, SERVE_DOWN = 0, 1, 2, 3
 IDLE, MOVING, DOORS = 0, 1, 2
 
 # State fields, in kernel argument order, with their per-env shape and dtype
@@ -50,6 +50,9 @@ STATE_FIELDS = (
     "queue_len",
     "queue_up",
     "direction",
+    "has_goal",
+    "goal_floor",
+    "goal_dir",
     "steps",
     "last_potential",
     "dropped",
@@ -76,6 +79,7 @@ def build_kernels(env, ft):
     Q, W = MAX_QUEUE, WARMUP_ROUNDS
     KIN, HALL, UNIFORM = c.kinematics, c.hall_calls, c.traffic == "uniform"
     RELATIVE, DIRECTION = env.obs_type == "relative", env.observe_direction
+    CUSTOM, TARGET = env.obs_type == "custom", env.action_mode == "target"
     MAX_STEPS = env.max_steps
     shaping = env.reward_shaping
     SHAPED = shaping is not None
@@ -339,9 +343,56 @@ def build_kernels(env, ft):
         queue_len: wp.array2d(dtype=int),
         queue_up: wp.array2d(dtype=int),
         direction: wp.array2d(dtype=int),
+        has_goal: wp.array2d(dtype=int),
     ):
-        """BuildingEnv's "relative" or "box" observation of env e, into out[row]."""
+        """BuildingEnv's observation of env e, into out[row]."""
         top = ft(TOP)
+        if wp.static(CUSTOM):
+            col = int(0)
+            for i in range(L):
+                load = int(0)
+                for g in range(F):
+                    load += passengers[e, i, g]
+                out[row, col] = wp.float32(round_even(position[e, i]))
+                out[row, col + 1] = wp.float32(load)
+                col += 2
+                if wp.static(KIN):
+                    out[row, col] = wp.float32(target[e, i])
+                    s = status(e, i, position, velocity, target, door_timer)
+                    out[row, col + 1] = wp.float32(s)
+                    col += 2
+            # Counts capped at the capacity. wp.static folds CAP in as a
+            # literal: read as a closure constant here, Warp 1.18 declared its
+            # register but never set it (a garbage cap, only in this branch).
+            cap_count = wp.float32(wp.static(float(CAP)))
+            for f in range(F):
+                if wp.static(HALL):
+                    out[row, col + f] = wp.min(wp.float32(queue_up[e, f]), cap_count)
+                else:
+                    out[row, col + f] = wp.min(wp.float32(queue_len[e, f]), cap_count)
+            col += F
+            if wp.static(HALL):
+                for f in range(F):
+                    # Not `down`: Warp's symbols are function-wide, and the box
+                    # branch's `down` is an int.
+                    going_down = wp.float32(queue_len[e, f] - queue_up[e, f])
+                    out[row, col + f] = wp.min(going_down, cap_count)
+                col += F
+            for i in range(L):
+                for f in range(F):
+                    out[row, col] = wp.float32(passengers[e, i, f])
+                    col += 1
+            if wp.static(TARGET):
+                for i in range(L):
+                    out[row, col] = wp.float32(1 - has_goal[e, i])
+                    col += 1
+            if wp.static(DIRECTION):
+                for i in range(L):
+                    # The lantern: 0 none yet, 1 up, 2 down.
+                    out[row, col + i] = wp.float32(
+                        wp.where(direction[e, i] < 0, 2, direction[e, i])
+                    )
+            return
         if wp.static(not RELATIVE):
             col = int(0)
             for i in range(L):
@@ -367,6 +418,10 @@ def build_kernels(env, ft):
                 for f in range(F):
                     out[row, col] = wp.float32(wp.where(passengers[e, i, f] > 0, 1.0, 0.0))
                     col += 1
+            if wp.static(TARGET):
+                for i in range(L):
+                    out[row, col] = wp.float32(1 - has_goal[e, i])
+                    col += 1
             if wp.static(DIRECTION):
                 for i in range(L):
                     out[row, col + i] = wp.float32(direction[e, i])
@@ -391,7 +446,7 @@ def build_kernels(env, ft):
                 out[row, base + 8] = wp.float32(door_timer[e, i] / DOOR_TIME)
             else:
                 out[row, base + 8] = wp.float32(0.0)
-            out[row, base + 9] = wp.float32(1.0)  # free: always, with step actions
+            out[row, base + 9] = wp.float32(1 - has_goal[e, i])  # free; always with step actions
             # Floor offsets -(F-1)..F-1 from this lift; the window's middle is its floor.
             for o in range(2 * F - 1):
                 g = floor - (F - 1) + o
@@ -434,10 +489,12 @@ def build_kernels(env, ft):
         queue_len: wp.array2d(dtype=int),
         queue_up: wp.array2d(dtype=int),
         direction: wp.array2d(dtype=int),
+        has_goal: wp.array2d(dtype=int),
         steps: wp.array(dtype=int),
         last_potential: wp.array(dtype=ft),
     ):
         for i in range(L):
+            has_goal[e, i] = 0
             position[e, i] = ZERO
             velocity[e, i] = ZERO
             target[e, i] = 0
@@ -471,6 +528,9 @@ def build_kernels(env, ft):
         queue_len: wp.array2d(dtype=int),
         queue_up: wp.array2d(dtype=int),
         direction: wp.array2d(dtype=int),
+        has_goal: wp.array2d(dtype=int),
+        goal_floor: wp.array2d(dtype=int),
+        goal_dir: wp.array2d(dtype=int),
         steps: wp.array(dtype=int),
         last_potential: wp.array(dtype=ft),
         dropped: wp.array(dtype=int),
@@ -490,6 +550,7 @@ def build_kernels(env, ft):
             queue_len,
             queue_up,
             direction,
+            has_goal,
             steps,
             last_potential,
         )
@@ -537,6 +598,7 @@ def build_kernels(env, ft):
             queue_len,
             queue_up,
             direction,
+            has_goal,
         )
 
     @wp.kernel(module="unique", module_options=opts)
@@ -559,6 +621,9 @@ def build_kernels(env, ft):
         queue_len: wp.array2d(dtype=int),
         queue_up: wp.array2d(dtype=int),
         direction: wp.array2d(dtype=int),
+        has_goal: wp.array2d(dtype=int),
+        goal_floor: wp.array2d(dtype=int),
+        goal_dir: wp.array2d(dtype=int),
         steps: wp.array(dtype=int),
         last_potential: wp.array(dtype=ft),
         dropped: wp.array(dtype=int),
@@ -606,6 +671,40 @@ def build_kernels(env, ft):
         empty = int(0)
         for i in range(L):  # in lift order: lower lifts board first
             a = actions[e, i]
+            if wp.static(TARGET):
+                # BuildingEnv._primitive_actions; it reads only this lift's
+                # own state, which the lifts before it do not change.
+                if has_goal[e, i] == 0:
+                    goal_floor[e, i] = a % F
+                    goal_dir[e, i] = int(1)
+                    if wp.static(HALL):
+                        if a >= F:
+                            goal_dir[e, i] = int(-1)
+                    has_goal[e, i] = 1
+                g = goal_floor[e, i]
+                srv = int(SERVE_UP)
+                if wp.static(HALL):
+                    if goal_dir[e, i] < 0:
+                        srv = int(SERVE_DOWN)
+                s = status(e, i, position, velocity, target, door_timer)
+                here = round_even(position[e, i])
+                if s == DOORS:
+                    a = srv  # ignored until the doors close
+                elif s == MOVING:
+                    heading = int(DOWN)
+                    sign = int(-1)
+                    if ft(target[e, i]) > position[e, i]:
+                        heading = int(UP)
+                        sign = int(1)
+                    a = srv
+                    if (g - target[e, i]) * sign > 0:
+                        a = heading  # carry on: the goal lies beyond the target
+                elif here != g:
+                    a = int(DOWN)
+                    if g > here:
+                        a = int(UP)
+                else:
+                    a = srv
             if a == UP or a == DOWN:
                 d = 1
                 if a == DOWN:
@@ -622,6 +721,8 @@ def build_kernels(env, ft):
                         if a == SERVE_UP:
                             d = 1
                     db = serve(e, i, d, position, passengers, queue, queue_len, queue_up)
+                    if wp.static(TARGET):
+                        has_goal[e, i] = 0  # served: take a new goal next step
                     delivered += db[0]
                     boarded += db[1]
                     if db[0] == 0 and db[1] == 0:
@@ -679,6 +780,7 @@ def build_kernels(env, ft):
                 queue_len,
                 queue_up,
                 direction,
+                has_goal,
             )
             clear(
                 e,
@@ -690,6 +792,7 @@ def build_kernels(env, ft):
                 queue_len,
                 queue_up,
                 direction,
+                has_goal,
                 steps,
                 last_potential,
             )
@@ -724,6 +827,7 @@ def build_kernels(env, ft):
             queue_len,
             queue_up,
             direction,
+            has_goal,
         )
 
     return reset_kernel, step_kernel
@@ -739,12 +843,14 @@ class WarpBuildingEnv:
         obs_type="relative",
         max_steps=200,
         observe_direction=False,
+        action_mode="step",
     ):
         if isinstance(config, str):
             config = PRESETS[config]
         self.config = c = config if config is not None else BuildingConfig()
-        if obs_type not in OBS_TYPES:
-            raise ValueError(f"the Warp env supports obs_type {OBS_TYPES}, got {obs_type!r}")
+        # The JAX env checks the options and works out the sizes.
+        spec = JaxBuildingEnv(c, obs_type=obs_type, observe_direction=observe_direction,
+                              action_mode=action_mode)  # fmt: skip
         if c.n_floors > 127:
             raise ValueError("queues hold destinations as int8: at most 127 floors")
         if reward_shaping is True:
@@ -755,17 +861,11 @@ class WarpBuildingEnv:
         self.obs_type = obs_type
         self.max_steps = max_steps
         self.observe_direction = observe_direction
-        self.n_actions = c.n_actions
-        n = c.n_floors
-        if obs_type == "relative":
-            self.observation_size = c.n_lifts * (
-                RELATIVE_LIFT_FIELDS + (2 * n - 1) * RELATIVE_FLOOR_FIELDS
-            )
-        else:
-            lift_fields = 4 if c.kinematics else 1
-            n_waiting = (2 if c.hall_calls else 1) * n
-            n_dir = c.n_lifts if observe_direction else 0
-            self.observation_size = c.n_lifts * lift_fields + n_waiting + c.n_lifts * n + n_dir
+        self.action_mode = action_mode
+        self.n_actions = spec.n_actions
+        self.observation_size = spec.observation_size
+        if obs_type == "custom":
+            self.observation_nvec = spec.observation_nvec
         self._kernels = {}
 
     def _float(self):
@@ -808,6 +908,9 @@ class WarpBuildingEnv:
             "queue_len": ((e, floors), jnp.int32),
             "queue_up": ((e, floors), jnp.int32),
             "direction": ((e, lifts), jnp.int32),
+            "has_goal": ((e, lifts), jnp.int32),
+            "goal_floor": ((e, lifts), jnp.int32),
+            "goal_dir": ((e, lifts), jnp.int32),
             "steps": ((e,), jnp.int32),
             "last_potential": ((e,), f),
             "dropped": ((e,), jnp.int32),
