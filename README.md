@@ -323,6 +323,36 @@ kernels compile with `fuse_fp` off, for the same rounding reason as the JAX
 and C++ ports; the first build of each configuration takes about a minute
 (Warp caches it in `~/.cache/warp`).
 
+## Hyperparameter testing
+
+`elevator_rl.tune` runs one JAX PPO training configured with
+[Hydra](https://hydra.cc) (`src/elevator_rl/conf/tune.yaml`: preset, env
+backend, PPO settings, seed) and writes `result.json` to its run directory.
+Hydra's multirun turns it into a grid sweep, and `elevator_rl.tune_report`
+tabulates a sweep, averaging over seeds:
+
+```sh
+uv sync --group warp --group hydra
+uv run python -m elevator_rl.tune -m ppo.learning_rate=1e-4,3e-4 seed=0,1,2
+uv run python -m elevator_rl.tune_report runs/tune/multirun/<date>
+```
+
+`elevator_rl.tune_search` searches the space in `conf/search.yaml` with
+[Optuna](https://optuna.org) instead, pruning runs whose eval curve falls
+behind. Trailing arguments are Hydra overrides applied to every trial, and
+the study is kept in SQLite, so a search can be stopped and resumed:
+
+```sh
+uv run python -m elevator_rl.tune_search --trials 40 --name full \
+    preset=full timesteps=5000000
+uv run python -m elevator_rl.tune_report runs/tune/search/full
+```
+
+Hydra's own Optuna sweeper plugin pins `optuna<3`, so `tune_search` drives
+Optuna directly through Hydra's compose API. Each JAX process preallocates
+75% of the GPU's memory, so run one at a time, or set
+`XLA_PYTHON_CLIENT_MEM_FRACTION`.
+
 ## License
 
 [MIT](LICENSE)
