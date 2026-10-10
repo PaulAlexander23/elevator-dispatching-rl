@@ -15,6 +15,7 @@ so a policy cloned on Python observations runs unchanged on the JAX or Warp env.
 
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import jax
@@ -43,7 +44,10 @@ def collect(preset, n_samples, gamma=0.99, seed=0, obs_type="relative", cache_di
         return data["observations"], data["actions"], data["returns"]
     observations, actions, returns = collect_python(*args)
     path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(path, observations=observations, actions=actions, returns=returns)
+    # Write then rename, so a run killed mid-write leaves no corrupt cache.
+    partial = path.with_suffix(f".{os.getpid()}.partial.npz")
+    np.savez_compressed(partial, observations=observations, actions=actions, returns=returns)
+    partial.replace(path)
     return observations, actions, returns
 
 
