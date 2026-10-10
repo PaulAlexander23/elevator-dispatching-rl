@@ -28,8 +28,10 @@ Floats are float32 unless `jax_enable_x64` is on. The parity tests turn it on:
 in float32 the kinematics round differently, so trajectories drift from
 Python's while staying statistically the same.
 
-Only the "step" action mode and the "box" and "relative" observations are
-ported.
+Both action modes ("step" and "target") and all three observations
+("custom", "box", "relative") are ported. The "custom" observation is
+returned as float32 holding small integers; a learner one-hot encodes it
+(`one_hot`), as SB3 does for a MultiDiscrete space.
 """
 
 from typing import NamedTuple
@@ -46,6 +48,8 @@ from elevator_rl.building import (
     IDLE,
     MOVING,
     PRESETS,
+    SERVE,
+    SERVE_DOWN,
     SERVE_UP,
     UP,
     BuildingConfig,
@@ -56,7 +60,8 @@ from elevator_rl.building_env import RELATIVE_FLOOR_FIELDS, RELATIVE_LIFT_FIELDS
 MAX_QUEUE = 512  # as the C++ port's kMaxQueue
 MAX_ARRIVALS = 16  # per floor per step
 WARMUP_ROUNDS = 10  # arrival rounds drawn at reset, as BuildingEnv.reset
-OBS_TYPES = ("box", "relative")
+OBS_TYPES = ("custom", "box", "relative")
+ACTION_MODES = ("step", "target")
 
 
 class EnvState(NamedTuple):
@@ -69,6 +74,9 @@ class EnvState(NamedTuple):
     queue_len: jax.Array  # (floors,) int
     queue_up: jax.Array  # (floors,) int: how many in each queue are going up
     direction: jax.Array  # (lifts,) int: last direction of travel, 0 / 1 / -1
+    has_goal: jax.Array  # (lifts,) bool: target mode, a goal not yet served
+    goal_floor: jax.Array  # (lifts,) int: target mode, the floor to serve
+    goal_dir: jax.Array  # (lifts,) int: target mode, serve going up (1) or down (-1)
     steps: jax.Array  # () int
     last_potential: jax.Array  # () float
     dropped: jax.Array  # () int: arrivals lost to full queues or the per-step cap
@@ -106,8 +114,9 @@ def _rounded(product):
 class JaxBuildingEnv:
     """BuildingEnv's dynamics, observations and rewards, as pure JAX functions.
 
-    Takes the same arguments as `BuildingEnv` (step actions only). The
-    methods take and return `EnvState`; nothing is stored on the object.
+    Takes the same arguments as `BuildingEnv`. The methods take and return
+    `EnvState`; nothing is stored on the object. `n_actions` is the number
+    of choices per lift in the chosen action mode.
     """
 
     def __init__(
@@ -117,12 +126,16 @@ class JaxBuildingEnv:
         obs_type="relative",
         max_steps=200,
         observe_direction=False,
+        action_mode="step",
     ):
         if isinstance(config, str):
             config = PRESETS[config]
         self.config = c = config if config is not None else BuildingConfig()
         if obs_type not in OBS_TYPES:
             raise ValueError(f"the JAX env supports obs_type {OBS_TYPES}, got {obs_type!r}")
+        if action_mode not in ACTION_MODES:
+            raise ValueError(f"action_mode must be one of {ACTION_MODES}, got {action_mode!r}")
+        self.action_mode = action_mode
         if reward_shaping is True:
             reward_shaping = SHAPINGS["default"]
         elif isinstance(reward_shaping, str):
@@ -131,7 +144,10 @@ class JaxBuildingEnv:
         self.obs_type = obs_type
         self.max_steps = max_steps
         self.observe_direction = observe_direction
-        self.n_actions = c.n_actions
+        if action_mode == "target":
+            self.n_actions = c.n_floors * (2 if c.hall_calls else 1)
+        else:
+            self.n_actions = c.n_actions
         # Kinematic limits in floors and seconds, as BuildingSim.
         self._max_speed = c.max_speed / c.floor_height
         self._acceleration = c.acceleration / c.floor_height
@@ -144,12 +160,25 @@ class JaxBuildingEnv:
                 RELATIVE_LIFT_FIELDS + (2 * c.n_floors - 1) * RELATIVE_FLOOR_FIELDS
             )
         else:
-            lift_fields = 4 if c.kinematics else 1
+            lift_fields = 4 if c.kinematics else (2 if obs_type == "custom" else 1)
             n_waiting = (2 if c.hall_calls else 1) * c.n_floors
+            n_free = c.n_lifts if action_mode == "target" else 0
             n_dir = c.n_lifts if observe_direction else 0
             self.observation_size = (
-                c.n_lifts * lift_fields + n_waiting + c.n_lifts * c.n_floors + n_dir
+                c.n_lifts * lift_fields + n_waiting + c.n_lifts * c.n_floors + n_free + n_dir
             )
+        if obs_type == "custom":
+            # Choices per entry, as BuildingEnv's MultiDiscrete observation_space.nvec.
+            per_lift = [c.n_floors, c.lift_capacity + 1]
+            if c.kinematics:
+                per_lift += [c.n_floors, 3]
+            nvec = np.full(self.observation_size, c.lift_capacity + 1)
+            nvec[: c.n_lifts * lift_fields] = np.tile(per_lift, c.n_lifts)
+            if n_free:
+                nvec[len(nvec) - n_dir - n_free : len(nvec) - n_dir] = 2
+            if n_dir:
+                nvec[-n_dir:] = 3
+            self.observation_nvec = nvec
 
     # -- state ---------------------------------------------------------------
 
@@ -169,6 +198,9 @@ class JaxBuildingEnv:
             queue_len=jnp.zeros(c.n_floors, jnp.int32),
             queue_up=jnp.zeros(c.n_floors, jnp.int32),
             direction=jnp.zeros(lifts, jnp.int32),
+            has_goal=jnp.zeros(lifts, bool),
+            goal_floor=jnp.zeros(lifts, jnp.int32),
+            goal_dir=jnp.zeros(lifts, jnp.int32),
             steps=jnp.zeros((), jnp.int32),
             last_potential=jnp.zeros((), f),
             dropped=jnp.zeros((), jnp.int32),
@@ -390,6 +422,38 @@ class JaxBuildingEnv:
             state = jax.lax.fori_loop(0, c.substeps, lambda _, s: self._integrate(s), state)
         return state, jnp.stack(delivered), jnp.stack(boarded), jnp.stack(served)
 
+    def primitive_actions(self, state, actions):
+        """BuildingEnv._primitive_actions: each lift's goal as this step's action.
+
+        A lift without a goal takes `actions[i]` as its new one; returns the
+        state with the goals recorded, and the primitive actions.
+        """
+        c = self.config
+        n = c.n_floors
+        new = ~state.has_goal
+        goal_floor = jnp.where(new, actions % n, state.goal_floor)
+        down = (actions >= n) if c.hall_calls else jnp.zeros_like(new)
+        goal_dir = jnp.where(new, jnp.where(down, -1, 1), state.goal_dir)
+        serve = jnp.where(goal_dir > 0, SERVE_UP, SERVE_DOWN) if c.hall_calls else SERVE
+        status = self.status(state)
+        floor = self._floor(state.position)
+        heading = jnp.where(state.target > state.position, UP, DOWN)
+        # Carry on while the goal lies beyond the current target.
+        beyond = (goal_floor - state.target) * jnp.where(heading == UP, 1, -1) > 0
+        primitive = jnp.where(
+            status == DOORS,
+            serve,  # ignored until the doors close
+            jnp.where(
+                status == MOVING,
+                jnp.where(beyond, heading, serve),
+                jnp.where(floor != goal_floor, jnp.where(goal_floor > floor, UP, DOWN), serve),
+            ),
+        )
+        state = state._replace(
+            has_goal=jnp.ones_like(state.has_goal), goal_floor=goal_floor, goal_dir=goal_dir
+        )
+        return state, primitive
+
     # -- env API -------------------------------------------------------------
 
     def make_vec_env(self, n_envs):
@@ -416,7 +480,12 @@ class JaxBuildingEnv:
             arrivals = self.draw_arrivals(sub, state.steps / self.max_steps)
         state = self.add_arrivals(state, arrivals)
         before = state.position
+        if self.action_mode == "target":
+            state, actions = self.primitive_actions(state, actions)
         state, delivered, boarded, served = self.apply_actions(state, actions)
+        if self.action_mode == "target":
+            reached = served & (actions != UP) & (actions != DOWN)
+            state = state._replace(has_goal=state.has_goal & ~reached)
         moved = state.position != before
         state = state._replace(
             direction=jnp.where(moved, jnp.where(state.position > before, 1, -1), state.direction)
@@ -450,9 +519,15 @@ class JaxBuildingEnv:
             return state.queue_len
         return jnp.concatenate([state.queue_up, state.queue_len - state.queue_up])
 
+    def _free(self, state):
+        """Per lift, 1 when it will take a new target (target action mode only)."""
+        return [] if self.action_mode != "target" else [~state.has_goal]
+
     def observe(self, state):
         if self.obs_type == "relative":
             return self._relative(state)
+        if self.obs_type == "custom":
+            return self._custom(state)
         c = self.config
         n = c.n_floors
         f = state.position.dtype
@@ -467,9 +542,26 @@ class JaxBuildingEnv:
             jnp.stack(lifts, axis=1).ravel(),
             (self._waiting(state) > 0).astype(f),
             (state.passengers > 0).ravel().astype(f),
+            *(free.astype(f) for free in self._free(state)),
         ]
         if self.observe_direction:
             parts.append(state.direction.astype(f))
+        return jnp.concatenate(parts).astype(jnp.float32)
+
+    def _custom(self, state):
+        """The MultiDiscrete "custom" observation, as float32 integers."""
+        c = self.config
+        lifts = [self._floor(state.position), state.passengers.sum(axis=1)]
+        if c.kinematics:
+            lifts += [state.target, self.status(state)]
+        parts = [
+            jnp.stack(lifts, axis=1).ravel(),
+            jnp.minimum(self._waiting(state), c.lift_capacity),
+            state.passengers.ravel(),
+            *(free.astype(jnp.int32) for free in self._free(state)),
+        ]
+        if self.observe_direction:
+            parts.append(jnp.where(state.direction < 0, 2, state.direction))  # 0, up 1, down 2
         return jnp.concatenate(parts).astype(jnp.float32)
 
     def _relative(self, state):
@@ -496,7 +588,7 @@ class JaxBuildingEnv:
                 (state.target - state.position) / (n - 1),
                 state.velocity / self._max_speed,
                 door,
-                jnp.ones(lifts, f),  # "free": always 1 with step actions
+                (~state.has_goal).astype(f) if self.action_mode == "target" else jnp.ones(lifts, f),
             ],
             axis=1,
         ).astype(jnp.float32)
@@ -512,6 +604,21 @@ class JaxBuildingEnv:
 
         windows = jax.vmap(window)(wanted, others, floors)
         return jnp.concatenate([head, windows], axis=1).ravel()
+
+
+def one_hot(obs, nvec):
+    """SB3's preprocessing of a MultiDiscrete observation: one one-hot per entry.
+
+    `obs` (..., len(nvec)) of integers -> (..., sum(nvec)) float32.
+    """
+    offsets = jnp.asarray(np.concatenate([[0], np.cumsum(nvec)[:-1]]))
+    index = obs.astype(jnp.int32) + offsets
+
+    def encode(index):
+        return jnp.zeros(int(np.sum(nvec)), jnp.float32).at[index].set(1.0)
+
+    flat = index.reshape(-1, index.shape[-1])
+    return jax.vmap(encode)(flat).reshape(*obs.shape[:-1], -1)
 
 
 class VecState(NamedTuple):

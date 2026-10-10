@@ -29,7 +29,7 @@ import numpy as np
 import optax
 
 from elevator_rl.building import PRESETS
-from elevator_rl.jax_env import JaxBuildingEnv
+from elevator_rl.jax_env import ACTION_MODES, OBS_TYPES, JaxBuildingEnv, one_hot
 
 BACKENDS = ("jax", "warp")
 
@@ -70,13 +70,28 @@ def mlp(layers, x):
     return x @ layers[-1]["w"] + layers[-1]["b"]
 
 
+def feature_size(env):
+    """The network's input size: the one-hot width for the "custom" observation."""
+    if env.obs_type == "custom":
+        return int(env.observation_nvec.sum())
+    return env.observation_size
+
+
+def make_features(env):
+    """obs -> network input; one-hot encodes "custom" as SB3 does for MultiDiscrete."""
+    if env.obs_type == "custom":
+        nvec = env.observation_nvec
+        return lambda obs: one_hot(obs, nvec)
+    return lambda obs: obs
+
+
 def init_params(key, env: JaxBuildingEnv, config: PPOConfig):
     k_pi, k_vf = jax.random.split(key)
     n_logits = env.config.n_lifts * env.n_actions
     # SB3's gains: sqrt(2) for hidden layers, 0.01 for the policy head, 1 for the value head.
     return {
-        "pi": init_mlp(k_pi, env.observation_size, config.net_arch, n_logits, 0.01),
-        "vf": init_mlp(k_vf, env.observation_size, config.net_arch, 1, 1.0),
+        "pi": init_mlp(k_pi, feature_size(env), config.net_arch, n_logits, 0.01),
+        "vf": init_mlp(k_vf, feature_size(env), config.net_arch, 1, 1.0),
     }
 
 
@@ -135,6 +150,7 @@ def make_train(env: JaxBuildingEnv, config: PPOConfig):
         raise ValueError(f"rollout {batch} does not divide into minibatches of {config.batch_size}")
     n_minibatches = batch // config.batch_size
     n_lifts = env.config.n_lifts
+    features = make_features(env)
     vec_reset, vec_step = env.make_vec_env(config.n_envs)
     optimizer = make_optimizer(config)
 
@@ -147,7 +163,7 @@ def make_train(env: JaxBuildingEnv, config: PPOConfig):
     def env_step(runner, _):
         params, opt_state, vec_state, obs, key = runner
         key, k_act = jax.random.split(key)
-        logits, value = policy(params, obs, n_lifts)
+        logits, value = policy(params, features(obs), n_lifts)
         actions = jax.random.categorical(k_act, logits)
         vec_state, next_obs, reward, done, info = vec_step(vec_state, actions)
         # Episodes only end at the time limit, so bootstrap through it, as
@@ -157,7 +173,7 @@ def make_train(env: JaxBuildingEnv, config: PPOConfig):
             # where, not `* done`: terminal_obs is only defined where done (the
             # Warp env leaves the rest unwritten), and NaN * 0 is NaN.
             lambda: jnp.where(
-                done, config.gamma * policy(params, info["terminal_obs"], n_lifts)[1], 0.0
+                done, config.gamma * policy(params, features(info["terminal_obs"]), n_lifts)[1], 0.0
             ),
             lambda: jnp.zeros_like(reward),
         )
@@ -187,7 +203,7 @@ def make_train(env: JaxBuildingEnv, config: PPOConfig):
 
     def loss_fn(params, mb):
         obs, actions, old_log_probs, adv, returns = mb
-        logits, value = policy(params, obs, n_lifts)
+        logits, value = policy(params, features(obs), n_lifts)
         ratio = jnp.exp(log_prob(logits, actions) - old_log_probs)
         adv = (adv - adv.mean()) / (adv.std() + 1e-8)
         clipped = jnp.clip(ratio, 1 - config.clip_range, 1 + config.clip_range)
@@ -200,7 +216,7 @@ def make_train(env: JaxBuildingEnv, config: PPOConfig):
 
     def update(runner):
         runner, (rollout, ep) = jax.lax.scan(env_step, runner, None, length=config.n_steps)
-        _, last_value = policy(runner.params, runner.obs, n_lifts)
+        _, last_value = policy(runner.params, features(runner.obs), n_lifts)
         adv, returns = advantages(rollout, last_value)
         flat = jax.tree.map(
             lambda x: x.reshape(batch, *x.shape[2:]),
@@ -250,13 +266,14 @@ def make_evaluate(env: JaxBuildingEnv, n_episodes):
     """
     vec_reset, vec_step = env.make_vec_env(n_episodes)
     n_lifts = env.config.n_lifts
+    features = make_features(env)
 
     def evaluate(params, key):
         vec_state, obs = vec_reset(key)
 
         def body(carry, _):
             vec_state, obs = carry
-            logits, _ = policy(params, obs, n_lifts)
+            logits, _ = policy(params, features(obs), n_lifts)
             vec_state, obs, reward, _, _ = vec_step(vec_state, logits.argmax(axis=-1))
             return (vec_state, obs), reward
 
@@ -277,20 +294,27 @@ def train(
     n_eval_episodes=10,
     verbose=True,
     backend="jax",
+    action_mode="step",
 ):
     """Train and return (params, history); history rows are dicts per eval.
 
-    `backend` picks the env: "jax" (jax_env) or "warp" (warp_env).
+    `backend` picks the env: "jax" (jax_env) or "warp" (warp_env, step
+    actions and the "box" and "relative" observations only).
 
     Throughput excludes compilation (the first update) and evaluation.
     """
     config = config or PPOConfig()
+    options = {"obs_type": obs_type}
     if backend == "warp":
         from elevator_rl.warp_env import WarpBuildingEnv as env_cls
+
+        if action_mode != "step":
+            raise ValueError("the Warp env has step actions only")
     else:
         env_cls = JaxBuildingEnv
-    env = env_cls(preset, reward_shaping=reward_shaping, obs_type=obs_type)
-    eval_env = env_cls(preset, reward_shaping=False, obs_type=obs_type)
+        options["action_mode"] = action_mode
+    env = env_cls(preset, reward_shaping=reward_shaping, **options)
+    eval_env = env_cls(preset, reward_shaping=False, **options)
     init, update = make_train(env, config)
     update = jax.jit(update, donate_argnums=0)
     evaluate = jax.jit(make_evaluate(eval_env, n_eval_episodes))
@@ -339,7 +363,8 @@ def train(
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--preset", choices=PRESETS, default="full")
-    parser.add_argument("--obs-type", choices=("box", "relative"), default="relative")
+    parser.add_argument("--obs-type", choices=OBS_TYPES, default="relative")
+    parser.add_argument("--action-mode", choices=ACTION_MODES, default="step")
     parser.add_argument("--timesteps", type=int, default=1_000_000)
     parser.add_argument("--n-envs", type=int, default=64)
     parser.add_argument("--n-steps", type=int, default=32)
@@ -368,6 +393,7 @@ def main(argv=None):
         seed=args.seed,
         backend=args.backend,
         eval_freq=args.eval_freq,
+        action_mode=args.action_mode,
     )
 
 
