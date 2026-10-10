@@ -221,11 +221,12 @@ class BuildingEnv(Env):
         shaping = self.reward_shaping
         if shaping is None or not shaping.progress:
             return 0.0
-        remaining = sum(
-            abs(destination - lift.position)
-            for lift in self.sim.state().lifts
-            for destination in lift.passengers
-        )
+        # A plain loop, not sum(): from Python 3.12, sum() of floats is
+        # compensated, so it rounds differently from the C++ port and 3.11.
+        remaining = 0.0
+        for lift in self.sim.state().lifts:
+            for destination in lift.passengers:
+                remaining += abs(destination - lift.position)
         return -shaping.progress * remaining / (self.config.n_floors - 1)
 
     def step(self, action):

@@ -47,6 +47,6 @@ if(ELEVATOR_PYTHON)
       LIBRARY_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/../src/elevator_rl")
   else()
     message(WARNING "nanobind not found for ${Python_EXECUTABLE}: skipping the Python module. "
-                    "Pass -DPython_EXECUTABLE=.venv/bin/python after `uv sync`.")
+                    "Pass -DPython_EXECUTABLE=$PWD/.venv/bin/python after `uv sync`.")
   endif()
 endif()
