@@ -29,7 +29,12 @@ def x64():
 OPTIONS = [
     {"obs_type": "relative", "reward_shaping": True},
     {"obs_type": "box", "reward_shaping": "progress_waiting", "observe_direction": True},
+    {"obs_type": "custom", "reward_shaping": True, "observe_direction": True},
+    {"obs_type": "relative", "reward_shaping": True, "action_mode": "target"},
+    {"obs_type": "custom", "action_mode": "target"},
+    {"obs_type": "box", "action_mode": "target", "observe_direction": True},
 ]
+IDS = ["relative", "box", "custom", "relative-target", "custom-target", "box-target"]
 
 
 def batch(arrivals):
@@ -37,12 +42,13 @@ def batch(arrivals):
     return Arrivals(*(jnp.asarray(field)[None] for field in arrivals))
 
 
-@pytest.mark.parametrize("options", OPTIONS, ids=["relative", "box"])
+@pytest.mark.parametrize("options", OPTIONS, ids=IDS)
 @pytest.mark.parametrize("preset", ["original", "multi", "kinematic", "hall_calls", "full"])
 def test_warp_matches_python_step_for_step(preset, options):
     env = BuildingEnv(preset, max_steps=80, **options)
     wenv = WarpBuildingEnv(preset, max_steps=80, **options)
     assert wenv.observation_size == env.observation_space.shape[0]
+    assert wenv.n_actions == env.action_space.nvec[0]
     n = env.config.n_floors
     drawn = []
     draw = env.sim.draw_arrivals
@@ -121,11 +127,16 @@ def test_auto_reset_keeps_the_terminal_obs():
             assert not np.array_equal(obs, info["terminal_obs"])
 
 
-def test_jax_ppo_trains_on_the_warp_env(x64):
+@pytest.mark.parametrize(
+    "options",
+    [{}, {"obs_type": "custom", "action_mode": "target"}],
+    ids=["relative", "custom-target"],
+)
+def test_jax_ppo_trains_on_the_warp_env(x64, options):
     from elevator_rl.jax_ppo import PPOConfig, make_train
 
     jax.config.update("jax_enable_x64", False)  # training runs in float32
-    env = WarpBuildingEnv("multi", reward_shaping=True, max_steps=20)
+    env = WarpBuildingEnv("multi", reward_shaping=True, max_steps=20, **options)
     init, update = make_train(env, PPOConfig(n_envs=8, n_steps=10, batch_size=40))
     runner = init(jax.random.key(0))
     for _ in range(2):  # 20 steps: the second update ends an episode

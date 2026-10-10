@@ -571,5 +571,5 @@ Added after Phases 3 and 4:
 Added after Warp:
 
 - [ ] **Profile the JAX PPO's policy and update.** With the Warp env, stepping is only about a tenth of training time, so the learner is the bottleneck again.
-- [ ] **Port the target action mode and the `custom` observation to Warp,** alongside the JAX port.
+- [x] **Port the target action mode and the `custom` observation to Warp,** alongside the JAX port. Done: exact parity with Python on every preset. Two Warp pitfalls on the way: a closure constant (`CAP`) read in one static branch of a `wp.func` compiled to an uninitialised register (fixed with `wp.static(...)`), and Warp's variables are function-wide, so two branches can't use one name with different types.
 - [ ] **Run the Warp tests in CI** on Warp's CPU backend, if the compile time (about a minute per config) is acceptable there.
