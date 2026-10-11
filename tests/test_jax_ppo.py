@@ -50,6 +50,27 @@ def test_update_runs_and_changes_the_policy():
     assert all(jax.tree.leaves(moved))
 
 
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"obs_type": "custom"},
+        {"action_mode": "target"},
+        {"obs_type": "custom", "action_mode": "target"},
+    ],
+    ids=["custom", "target", "custom-target"],
+)
+def test_update_runs_with_target_actions_and_custom_obs(options):
+    env = JaxBuildingEnv("hall_calls", reward_shaping=True, max_steps=20, **options)
+    config = PPOConfig(n_envs=4, n_steps=10, batch_size=20, net_arch=(16, 16))
+    init, update = make_train(env, config)
+    runner = init(jax.random.key(0))
+    if env.obs_type == "custom":
+        assert runner.params["pi"][0]["w"].shape[0] == env.observation_nvec.sum()
+    assert runner.params["pi"][-1]["w"].shape[1] == env.config.n_lifts * env.n_actions
+    runner, metrics = jax.jit(update)(runner)
+    assert np.isfinite(float(metrics["value_loss"]))
+
+
 def test_minibatch_must_divide_the_rollout():
     with pytest.raises(ValueError, match="minibatches"):
         make_train(JaxBuildingEnv("multi"), PPOConfig(n_envs=8, n_steps=10, batch_size=64))
