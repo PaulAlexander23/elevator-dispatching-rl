@@ -127,6 +127,59 @@ def test_random_policy_matches_python_in_distribution():
     assert abs(np.mean(jax_returns) - np.mean(python_returns)) < 4 * error
 
 
+@pytest.mark.parametrize("fraction", [0.1, 0.5, 0.85])
+def test_arrivals_match_python_in_distribution(fraction):
+    """JAX's arrival draw (a Poisson total split over floors) against Python's
+    per-floor Poisson counts: count means and variances per floor, and the
+    (origin, destination) histogram, all against Python's arrival model."""
+    from scipy import stats
+
+    jenv = JaxBuildingEnv("full")
+    n, draws = jenv.config.n_floors, 20_000
+    keys = jax.random.split(jax.random.key(0), draws)
+    arrivals = jax.jit(jax.vmap(lambda k: jenv.draw_arrivals(k, fraction)))(keys)
+    count = np.asarray(arrivals.count)
+    assert not np.asarray(arrivals.overflow).any()
+
+    env = BuildingEnv("full")
+    env.reset(seed=0)
+    rates, destinations = env.sim.arrival_model(fraction)
+    expected = rates[:, None] * destinations  # mean arrivals per step, origin x destination
+    np.testing.assert_allclose(np.asarray(jenv.arrival_model(fraction)[0]), rates, rtol=1e-12)
+
+    # Per floor, mean and variance of the count are both the rate (Poisson).
+    error = np.sqrt(rates / draws)
+    assert np.all(np.abs(count.mean(axis=0) - rates) < 5 * error + 1e-12)
+    np.testing.assert_allclose(count.var(axis=0), rates, rtol=0.1, atol=2e-3)
+
+    def histogram(pairs):
+        cells = np.zeros((n, n))
+        np.add.at(cells, (pairs[:, 0], pairs[:, 1]), 1)
+        return cells
+
+    slot = np.arange(arrivals.destination.shape[-1])
+    used = slot < count[..., None]  # (draws, floors, slots)
+    origin = np.broadcast_to(np.arange(n)[None, :, None], used.shape)
+    jax_pairs = np.stack([origin[used], np.asarray(arrivals.destination)[used]], axis=1)
+    python_pairs = np.array(
+        [pair for _ in range(draws) for pair in env.sim.draw_arrivals(fraction)]
+    )
+    # Pool the cells expected to see under 5 arrivals into one, then chi-square.
+    big = expected * draws >= 5
+    small = ~big & (expected > 0)
+    assert expected[big].sum() / expected.sum() > 0.95
+    for pairs in (jax_pairs, python_pairs):
+        cells = histogram(pairs)
+        assert cells[expected == 0].sum() == 0  # e.g. no trip to its own floor
+        observed, mean = cells[big], expected[big] * draws
+        if small.any():
+            observed = np.append(observed, cells[small].sum())
+            mean = np.append(mean, expected[small].sum() * draws)
+        # Counts are Poisson, not multinomial: the total is free too.
+        chi2 = ((observed - mean) ** 2 / mean).sum()
+        assert stats.chi2.sf(chi2, df=len(mean)) > 1e-3
+
+
 def test_vec_env_auto_resets_with_terminal_obs():
     jenv = JaxBuildingEnv("multi", max_steps=5)
     reset, step = make_vec_env(jenv, 3)

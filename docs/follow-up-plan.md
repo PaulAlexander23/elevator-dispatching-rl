@@ -82,13 +82,33 @@ What we learned:
 
 That is about 2K = 64 uniforms per env per step instead of 14,400 Gumbel draws. The `uniform` traffic path is already cheap and stays as it is.
 
-- [ ] Measure the largest arrival rate on `full` (morning peak) and the chance N exceeds K; choose K so it is negligible, and count overflows in `dropped`.
-- [ ] Keep exact parity: the parity tests inject Python's arrivals, so they don't depend on the draw. Run them unchanged.
-- [ ] Add or extend a statistical test: per-floor count means and the destination histogram against the Python env's, over many steps.
-- [ ] Re-run `scripts/profile_jax_env.py` and `scripts/time_jax_env.py`: arrivals' share, env steps/s at 1,024 and 16,384 envs.
-- [ ] One reward-parity run on the JAX env (`scripts/reward_parity.py`, 3 seeds) to confirm learning is unchanged.
+- [x] Measure the largest arrival rate on `full` (morning peak) and the chance N exceeds K; choose K so it is negligible, and count overflows in `dropped`.
+- [x] Keep exact parity: the parity tests inject Python's arrivals, so they don't depend on the draw. Run them unchanged.
+- [x] Add or extend a statistical test: per-floor count means and the destination histogram against the Python env's, over many steps.
+- [ ] (CPU done; GPU waits for a reboot) Re-run `scripts/profile_jax_env.py` and `scripts/time_jax_env.py`: arrivals' share, env steps/s at 1,024 and 16,384 envs.
+- [ ] (waits for the GPU) One reward-parity run on the JAX env (`scripts/reward_parity.py`, 3 seeds) to confirm learning is unchanged.
 
 **Note.** The Warp env already draws only the arrivals that happen, so this speeds up the JAX env, not the Warp training path.
+
+### Result: done on the CPU; GPU numbers to follow
+
+`JaxBuildingEnv.draw_arrivals` now draws a Poisson total and places each arrival by inverse CDF, as planned. Details:
+
+- **Slots.** The expected total is `arrival_probability × n_floors` whatever the traffic mix (each pattern's origins sum to one, as do the mix weights), so it is 3.0 a step on `full` at every point of the day. `arrival_slots(config)` takes the mean plus 10 standard deviations plus 10, rounded up to a multiple of 8: 32 on `full`. Poisson(3) exceeds 32 about once in 1e23 steps; any excess goes in a new `Arrivals.overflow` field and is counted in `dropped`.
+- **Layout.** The slots are laid out in the old per-floor `Arrivals` form (floors × 16, in slot order), so `add_arrivals`, its caps and the parity tests' injected arrivals are unchanged. A slot's place in its floor's row is the number of earlier slots from the same floor, a 32 × 32 comparison.
+- **Inverse CDF.** `_inverse_cdf` never returns a zero-weight index, even if rounding puts a uniform at the very end of the cumulative sum, so no passenger is sent to their own floor.
+- **Tests.** The parity tests pass unchanged. The new `test_arrivals_match_python_in_distribution` (three points of the day, 20,000 draws) checks per-floor count means and variances against Python's rates, and a chi-square on the (origin, destination) histogram, for both the JAX and the Python draws. It fails if the destination row is off by one floor or the total rate is 5% too high. Full suite: 238 passed.
+
+CPU profile (`scripts/profile_jax_env.py --n-envs 1024`, `full`, `relative`; the GPU was unavailable, see below):
+
+| | Arrivals, ms per batched step | Share of step | Step, ms | Env steps/s |
+| --- | --: | --: | --: | --: |
+| Before | 212.2 | 91% | 234.4 | 4,370 |
+| After | 7.6 | 14% | 54.0 | 18,954 |
+
+Arrivals are 28× cheaper and the step 4.3× faster on the CPU; the goal (under 15%) is met there. On the CPU the actions and substeps are now 79% of the step.
+
+**Still to do once the GPU is back.** On 2026-10-11 the NVIDIA driver's user-space library (580.178) was newer than the loaded kernel module (580.173), so JAX fell back to the CPU until a reboot. Still to run: the GPU profile at 1,024 and 16,384 envs (`profile_jax_env.py`, `time_jax_env.py`) and the reward-parity run.
 
 ## 3. Smaller observation or a shared per-lift encoder
 
