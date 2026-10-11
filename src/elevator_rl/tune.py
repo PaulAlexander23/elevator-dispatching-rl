@@ -34,12 +34,33 @@ def ppo_config(cfg: DictConfig) -> PPOConfig:
     return PPOConfig(**ppo)
 
 
+def warm_start_params(cfg: DictConfig, config: PPOConfig):
+    """Params cloned from the heuristic, or None when `warm_start.samples` is 0."""
+    if not cfg.warm_start.samples:
+        return None, {}
+    from elevator_rl.jax_env import JaxBuildingEnv
+    from elevator_rl.jax_imitate import warm_start
+
+    env = JaxBuildingEnv(cfg.preset, obs_type=cfg.obs_type)  # only its sizes are used
+    return warm_start(
+        env,
+        cfg.preset,
+        config,
+        cfg.warm_start.samples,
+        epochs=cfg.warm_start.epochs,
+        seed=cfg.seed,
+        cache_dir=cfg.warm_start.cache_dir,
+    )
+
+
 def run(cfg: DictConfig, callback=None, verbose=True):
     """Train with `cfg` and return a result dict (config, history, score)."""
+    config = ppo_config(cfg)
+    params, imitation = warm_start_params(cfg, config)
     _, history = train(
         cfg.preset,
         cfg.timesteps,
-        ppo_config(cfg),
+        config,
         cfg.obs_type,
         reward_shaping=cfg.reward_shaping,
         seed=cfg.seed,
@@ -48,8 +69,10 @@ def run(cfg: DictConfig, callback=None, verbose=True):
         verbose=verbose,
         backend=cfg.backend,
         callback=callback,
+        params=params,
     )
     return {
+        "imitation": imitation,
         "config": OmegaConf.to_container(cfg),
         "history": history,
         "score": final_score(history),
