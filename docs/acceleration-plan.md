@@ -460,7 +460,7 @@ What we learned:
 - **JAX doesn't pay on the CPU.** JAX PPO manages 3.6–4.9k steps/s there, below SB3 with 8 torch threads (19k).
 - **A shell setting broke CUDA.** AMD's AOCC setup script put the system library directories on `LD_LIBRARY_PATH`. JAX then loaded Ubuntu's 2023 `libnvJitLink` instead of its own and fell back to the CPU. Fixed in `~/.profile`.
 - **Compiling takes 3–4 s** per configuration, paid once per run.
-- **Not ported yet:** the imitation warm start (see the backlog). The target action mode and the `custom` observation were ported later.
+- **Not ported at first:** the target action mode, the `custom` observation and the imitation warm start. All three were ported later (see the backlog).
 
 ### Phase 4 result: NVIDIA Warp implemented
 
