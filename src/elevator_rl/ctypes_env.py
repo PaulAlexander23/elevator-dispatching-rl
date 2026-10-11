@@ -1,7 +1,7 @@
 """Stable-Baselines3 `VecEnv` over the C++ env loaded as a plain shared library.
 
 The library (libelevator_c.so, elevator_c.dll on Windows) is the flat C API
-in cpp/capi/elevator_c.h, built by cpp/CMakeLists.txt next to this file; it
+in cpp/capi/elevator_c.h, built by cpp/CMakeLists.txt into this package; it
 needs no Python headers. `CtypesVecEnv` behaves exactly as `CppVecEnv`, which
 goes through the nanobind module instead: same seeds, same trajectories.
 
@@ -31,7 +31,22 @@ elif sys.platform == "darwin":
     LIBRARY_NAME = "libelevator_c.dylib"
 else:
     LIBRARY_NAME = "libelevator_c.so"
-LIBRARY_PATH = Path(__file__).with_name(LIBRARY_NAME)
+
+
+def _find_library():
+    """The library in the package: next to this file after a hand build of
+    cpp/, or in site-packages after `uv sync`, whose editable install splits
+    the package between the two (the package's `__path__` lists both)."""
+    import elevator_rl
+
+    for folder in elevator_rl.__path__:
+        path = Path(folder) / LIBRARY_NAME
+        if path.exists():
+            return path
+    return Path(__file__).with_name(LIBRARY_NAME)
+
+
+LIBRARY_PATH = _find_library()
 
 
 class Options(ctypes.Structure):
@@ -105,8 +120,7 @@ def _require():
     if _lib is None:
         raise ImportError(
             f"{LIBRARY_NAME} is not built: run "
-            "`cmake -S cpp -B cpp/build -DPython_EXECUTABLE=.venv/bin/python && "
-            "cmake --build cpp/build`"
+            "`uv sync` (it needs CMake and a C++17 compiler; see the README)"
         )
     return _lib
 

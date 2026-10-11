@@ -69,15 +69,44 @@ hydra = [
     "optuna>=4",
 ]
 
+# scikit-build-core builds the C++ port (cpp/) into the package: the nanobind
+# module elevator_rl._cpp and the C library libelevator_c. Without a C++
+# compiler, or with ELEVATOR_NO_CPP=1, it installs the pure-Python package,
+# and the C++ backends report that they are not built.
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["scikit-build-core>=1.0", "nanobind>=2.0"]
+build-backend = "scikit_build_core.build"
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/elevator_rl"]
+[tool.scikit-build]
+minimum-version = "build-system.requires"
+cmake.source-dir = "cpp"
+cmake.version = ">=3.20"
+wheel.packages = ["src/elevator_rl"]
+# A build directory that persists, so C++ edits rebuild incrementally.
+build-dir = "cpp/build/skbuild/{wheel_tag}"
+sdist.exclude = ["cpp/build", "runs"]
+
+[[tool.scikit-build.overrides]]
+if.env.ELEVATOR_NO_CPP = true
+wheel.cmake = false
+
+[[tool.scikit-build.overrides]]
+if.failed = true
+wheel.cmake = false
+messages.after-success = "The C++ build failed, so elevator_rl was installed without its C++ backends (see the error above)."
 
 [tool.uv]
 default-groups = ["dev", "cpu"]
+# Rebuild the package (and so the C++) when these change, not only pyproject.toml.
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "cpp/CMakeLists.txt" },
+    { file = "cpp/src/**" },
+    { file = "cpp/include/**" },
+    { file = "cpp/capi/**" },
+    { file = "cpp/python/**" },
+    { env = "ELEVATOR_NO_CPP" },
+]
 conflicts = [[{ group = "cpu" }, { group = "cuda" }]]
 required-environments = [
  "sys_platform == 'darwin' and platform_machine == 'x86_64'"

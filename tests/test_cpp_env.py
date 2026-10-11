@@ -2,8 +2,7 @@
 
 Skipped unless the module is built:
 
-    cmake -S cpp -B cpp/build -DPython_EXECUTABLE=.venv/bin/python
-    cmake --build cpp/build
+    uv sync    # builds it into the package (needs CMake and a C++17 compiler)
 """
 
 import numpy as np

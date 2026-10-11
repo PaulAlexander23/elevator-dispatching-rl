@@ -38,17 +38,37 @@ Reward claims need 3 seeds: the 50M-step runs spread from 74.4 to 79.2, so diffe
 
 **Approach.** Replace hatchling with scikit-build-core as the build backend, building `cpp/CMakeLists.txt`. An override turns CMake off when `ELEVATOR_NO_CPP=1` is set (`[[tool.scikit-build.overrides]]` with `if.env`, setting `wheel.cmake = false`). `cpp_env.py` and `ctypes_env.py` already fall back when the module is missing.
 
-- [ ] Switch `[build-system]` to scikit-build-core with nanobind as a build requirement; install `_cpp` and `libelevator_c.so` into `elevator_rl/`.
-- [ ] Set `tool.uv.cache-keys` to the `cpp/` sources and `CMakeLists.txt`, so uv rebuilds when the C++ changes. Without it uv reuses a stale build.
-- [ ] Decide on editable rebuilds (`editable.rebuild`) against a plain reinstall after C++ edits, and write the answer in the README.
-- [ ] CI: let `uv sync` build the module, and keep `cmake` + `ctest` only for the C++ unit tests.
-- [ ] Keep `-ffp-contract=off`: parity depends on it.
-- [ ] Test the fallback: `ELEVATOR_NO_CPP=1 uv sync` gives a working package whose C++ tests skip.
+- [x] Switch `[build-system]` to scikit-build-core with nanobind as a build requirement; install `_cpp` and `libelevator_c.so` into `elevator_rl/`.
+- [x] Set `tool.uv.cache-keys` to the `cpp/` sources and `CMakeLists.txt`, so uv rebuilds when the C++ changes. Without it uv reuses a stale build.
+- [x] Decide on editable rebuilds (`editable.rebuild`) against a plain reinstall after C++ edits, and write the answer in the README.
+- [x] CI: let `uv sync` build the module, and keep `cmake` + `ctest` only for the C++ unit tests.
+- [x] Keep `-ffp-contract=off`: parity depends on it.
+- [x] Test the fallback: `ELEVATOR_NO_CPP=1 uv sync` gives a working package whose C++ tests skip.
 
 **Risks.**
 
 - **The EnvPool wheel.** This item was skipped overnight because it could break the EnvPool wheel. That wheel is not in `uv.lock`, so every `uv sync` removes it, and a sync that now also rebuilds the C++ makes that happen more often. Options: an `envpool` dependency group with `find-links` to `cpp/build/envpool-dist/` (but then the lock needs the wheel to exist), or documenting `uv sync --inexact`. Choose one and test that the EnvPool tests still run after a sync.
 - **macOS.** `required-environments` includes Intel macOS, which has no CUDA and may lack a compiler. There the build must fall back, not fail.
+
+### Result: done
+
+`uv sync` now builds the C++ into the package in about 5 seconds, and the next `uv run` rebuilds it after any change to `cpp/`. All 235 tests pass on it, the C++ and ctypes parity tests included. Nobody builds or copies `.so` files by hand any more.
+
+What was built:
+
+- **Build backend.** scikit-build-core with `cmake.source-dir = "cpp"`, nanobind in the build environment, and a persistent build directory in `cpp/build/skbuild/`. The CMake file installs `_cpp` and `libelevator_c` into the wheel's `elevator_rl/` when `SKBUILD` is set, and skips the tools and C++ tests there (`ELEVATOR_TOOLS`).
+- **Two fallbacks to pure Python,** both tested: `ELEVATOR_NO_CPP=1`, and any failed C++ build (an `if.failed` override; tested with a compiler that doesn't exist). Both give a `py3-none-any` wheel, and with it the C++ tests skip (50 passed, 33 skipped in the C++ and building tests).
+- **Rebuilds.** `tool.uv.cache-keys` lists `cpp/src`, `cpp/include`, `cpp/capi`, `cpp/python`, `cpp/CMakeLists.txt` and `ELEVATOR_NO_CPP`. A `touch` of `cpp/src/building.cpp` made the next `uv run` rebuild. `editable.rebuild` was not needed: uv's cache keys do the same job, without CMake running on import.
+- **Hand builds** of `cpp/` are now only for the replay and benchmark tools and the C++ tests. Their copies of the modules stay in `cpp/build/elevator_rl/`, not `src/`.
+- **CI** builds the module through `uv sync`, then asserts it is there, since a failed build would otherwise fall back quietly and the C++ tests would skip.
+- **The sdist** (400 KB) builds a wheel with both libraries.
+
+What we learned:
+
+- **An editable install splits the package.** scikit-build-core's editable mode serves the Python files from `src/` and the built files from `site-packages`, and the package's `__path__` lists both. `import elevator_rl._cpp` found the module, but `ctypes_env` looked only next to its own file, so it now searches `__path__`. A `.so` left in `src/` by an old hand build would have been found first, possibly stale. That is why hand builds no longer write there.
+- **EnvPool was not at risk.** `uv run` rebuilds the C++ without removing the EnvPool wheel (checked after a rebuild), and `uv sync --inexact` keeps it too. Only a plain `uv sync` removes it, as before. The wheel stays out of the lock, because CI can't build it.
+- **`wheel.exclude` matches the built files as well,** not only the sources. Excluding the hand-build copies in `src/` dropped both libraries from the wheel. It wasn't needed anyway: scikit-build-core already leaves out gitignored files.
+- **Untested:** macOS. Without a compiler there, the `if.failed` override should fall back to pure Python.
 
 ## 2. Cheaper arrivals in the JAX env
 

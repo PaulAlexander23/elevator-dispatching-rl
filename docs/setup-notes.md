@@ -13,9 +13,11 @@ run commands; this page covers what went wrong and why.
   `.python-version` pins 3.12. Ubuntu's own 3.12 has no development headers,
   which the nanobind module needs, so the venv uses uv's managed Python:
   `uv sync --python-preference only-managed`.
-- **Build the C++ module against the venv by absolute path:**
-  `cmake -S cpp -B cpp/build -DPython_EXECUTABLE=$PWD/.venv/bin/python`.
-  With a relative path, CMake picked up another Python on the PATH
+- **`uv sync` builds the C++ module** with scikit-build-core, against the
+  venv's Python. A hand build of `cpp/` (for the tools and C++ tests) needs
+  the venv by absolute path,
+  `cmake -S cpp -B cpp/build -DPython_EXECUTABLE=$PWD/.venv/bin/python`:
+  with a relative path, CMake picked up another Python on the PATH
   (miniconda) and skipped the module.
 - **Float sums changed in Python 3.12.** From 3.12, `sum()` of floats uses
   compensated summation, so it rounds differently from the C++ port and
@@ -35,8 +37,10 @@ run commands; this page covers what went wrong and why.
 EnvPool is not a dependency group: `scripts/build_envpool.sh` builds a wheel
 into `cpp/build/envpool-dist/`. It isn't in `uv.lock`, so `uv sync` removes
 it; reinstall it after a sync with
-`uv pip install cpp/build/envpool-dist/envpool-*.whl` (`uv run` leaves it
-alone).
+`uv pip install cpp/build/envpool-dist/envpool-*.whl`, or sync with
+`uv sync --inexact`, which keeps it. `uv run` leaves it alone, including
+when it rebuilds the package's C++ after a change to `cpp/`. It stays out
+of the lock because CI can't build it (Bazel, a few minutes).
 
 ## The GTX 1080 (Pascal)
 
@@ -88,6 +92,13 @@ On the same random data, XLA's and NVRTC's fused results differed from
 NumPy in 27,880 of 100,000 cases.
 
 ## Build and compile times
+
+- **The package's C++:** about 5 s for `uv sync` to build `_cpp` and
+  `libelevator_c`; uv rebuilds when a file in `cpp/src`, `cpp/include`,
+  `cpp/capi`, `cpp/python` or `cpp/CMakeLists.txt` changes (its
+  `cache-keys` in `pyproject.toml`). Without a compiler the build falls back
+  to pure Python and prints a note, so a missing `_cpp` after a sync means
+  the C++ build failed: rerun `uv sync -v` to see why.
 
 - **EnvPool wheel:** about 3 minutes for the first Bazel build (it downloads
   its dependencies); the Bazel cache lives in `~/.cache/bazel`.

@@ -3,8 +3,7 @@ against CppVecEnv, plus the C API's error handling.
 
 Skipped unless both are built:
 
-    cmake -S cpp -B cpp/build -DPython_EXECUTABLE=.venv/bin/python
-    cmake --build cpp/build
+    uv sync    # builds them into the package (needs CMake and a C++17 compiler)
 """
 
 import ctypes

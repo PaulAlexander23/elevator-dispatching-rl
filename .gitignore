@@ -9,7 +9,8 @@ logs/
 # C++ build output
 cpp/build/
 
-# Python module and C library built by cpp/CMakeLists.txt
+# Python module and C library: hand builds of cpp/ used to write them here
+# (now cpp/build/elevator_rl/); `uv sync` installs them into site-packages.
 src/elevator_rl/_cpp*.so
 src/elevator_rl/_cpp*.pyd
 src/elevator_rl/libelevator_c.so
