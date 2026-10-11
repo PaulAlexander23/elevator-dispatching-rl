@@ -641,6 +641,26 @@ _Source: `scripts/profile_jax_ppo.py --trace runs/trace` (GTX 1080; env, policy 
 - **The JAX env's rollout costs more than its parts.** On the JAX env, env + policy = 158 ms but the rollout takes 256 ms at 16,384 envs: storing the trajectory and the masked auto-reset add about 100 ms. On Warp the parts add up (71 vs 74 ms), as its resets run only in the threads that need them.
 - **The policy forward pass is cheap:** 4–11% of the update.
 
+### Profiling the JAX env: arrivals, not actions, cost most
+
+Drawing and queueing each step's arrivals takes 55–59% of a JAX env step on the GPU, more than the lifts' actions (35–40%). The note in the backlog had it the other way round.
+
+| Part (GTX 1080, `full`, relative obs) | 1,024 envs | 16,384 envs |
+| --- | --: | --: |
+| Arrivals: Poisson counts, destinations, queueing | 1.37 ms (59%) | 15.54 ms (55%) |
+| Actions + kinematics substeps | 0.99 ms (43%) | 13.53 ms (48%) |
+| Kinematics substeps alone | 0.24 ms (10%) | 2.18 ms (8%) |
+| Observation | 0.07 ms (3%) | 1.01 ms (4%) |
+| Whole step | 2.32 ms | 28.19 ms |
+| Batched step with auto-reset | 2.58 ms | 30.80 ms |
+| Env steps/s (whole step) | 441,816 | 581,124 |
+
+_Source: `scripts/profile_jax_env.py --n-envs 1024 16384`; each part vmapped, compiled and timed on its own from a mid-episode state; shares of the whole step._
+
+- **Arrivals are masked work.** Each env draws a Poisson count per floor (capped at 16), a destination per possible arrival and writes them into fixed 512-slot queues, for all 30 floors, every step, whether anyone arrives or not. The Warp env draws only the arrivals that happen.
+- **On the CPU the share is larger still** (83% at 64 envs), so the random draws, not the queue writes, are the likely cost.
+- A cheaper arrival model (one Poisson draw per step, scattered to floors) is the obvious next speed-up for the JAX env. The Warp env makes it moot for training.
+
 ## Backlog: to come back to
 
 These were recommended along the way and deferred, so Phases 3 and 4 could go ahead first. Logged 2026-10-10.
@@ -662,7 +682,7 @@ Added after Phases 3 and 4:
 - [x] **Run the learning-quality check in JAX.** It is now cheap: 5M steps of `full` take under a minute at the fast settings.
 - [x] **Port the imitation warm start to JAX,** so the `full` recipe (behaviour cloning, then PPO at learning rate 3e-5) can run there. Done: `jax_imitate` clones the heuristic into the JAX PPO's networks (`jax_ppo --pretrain 100000`, or `warm_start.samples=100000` in the Hydra config). It starts at 54 passengers (SB3's clone: 57.5), and the recipe then reaches 68.6 ± 1.1 after 5M steps (3 seeds), level with the heuristic's 69.
 - [x] **Port the target action mode and the `custom` observation to JAX.** Done: both match Python exactly, step for step on every preset (float64), and the JAX PPO one-hot encodes `custom` as SB3 does (`--obs-type custom --action-mode target`).
-- [ ] **Profile the JAX env** with `jax.profiler` to find what limits it at about 660k env steps/s; applying the actions is half of each step.
+- [x] **Profile the JAX env** with `jax.profiler` to find what limits it at about 660k env steps/s; applying the actions is half of each step. Done (`scripts/profile_jax_env.py`, each part compiled and timed on its own): drawing and queueing the arrivals is the biggest part, 55–59% of a step on the GPU; the lifts' actions take about 35–40% (boarding is a cumsum and a scatter over each 512-slot queue), the kinematics substeps 8–10%, the observation 3–4%, and the batched auto-reset adds 9–11%. The parts overlap a little when fused, so they sum to just over 100%.
 - [x] **Try EnvPool's XLA interface,** which lets JAX step EnvPool envs from inside `jit`, as a bridge between Phases 3 and 4. Tried (`scripts/time_envpool_xla.py`): our trimmed wheel's `pool.xla()` works, and a `lax.scan` steps EnvPool on the GPU at 384k env steps/s with 64 envs and 696k with 256 (72–75% of its Python API's 530k and 930k), 3–4× the JAX and Warp envs at those small batches. But it deadlocked intermittently: always on CPU JAX past a few steps, and once on the GPU at 1,024 envs. Not wired into the JAX PPO: Warp is faster at scale and reliable.
 
 Added after Warp:
