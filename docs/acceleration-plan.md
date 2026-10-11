@@ -544,6 +544,26 @@ Gate 2 answered no: after Phase 2 the env took 1% of training time, so EnvPool c
 - [x] Phase 3: EnvPool sync vs async at 1–16 threads; PPO steps/s vs Phase 2
 - [ ] Every phase: `benchmark.py` reward table within noise of the Python env across 3 seeds
 
+### Profiling the JAX env: arrivals, not actions, cost most
+
+Drawing and queueing each step's arrivals takes 55–59% of a JAX env step on the GPU, more than the lifts' actions (35–40%). The note in the backlog had it the other way round.
+
+| Part (GTX 1080, `full`, relative obs) | 1,024 envs | 16,384 envs |
+| --- | --: | --: |
+| Arrivals: Poisson counts, destinations, queueing | 1.37 ms (59%) | 15.54 ms (55%) |
+| Actions + kinematics substeps | 0.99 ms (43%) | 13.53 ms (48%) |
+| Kinematics substeps alone | 0.24 ms (10%) | 2.18 ms (8%) |
+| Observation | 0.07 ms (3%) | 1.01 ms (4%) |
+| Whole step | 2.32 ms | 28.19 ms |
+| Batched step with auto-reset | 2.58 ms | 30.80 ms |
+| Env steps/s (whole step) | 441,816 | 581,124 |
+
+_Source: `scripts/profile_jax_env.py --n-envs 1024 16384`; each part vmapped, compiled and timed on its own from a mid-episode state; shares of the whole step._
+
+- **Arrivals are masked work.** Each env draws a destination for all 16 arrival slots on each of 30 floors with `jax.random.categorical` over 30 floors, which is Gumbel-max: about 14,400 random numbers per env per step, where about 3 people arrive per step on average. The Warp env draws only the arrivals that happen.
+- **On the CPU the share is larger still** (83% at 64 envs), which fits random-number generation, not the queue writes, being the cost.
+- A cheaper arrival model (one Poisson draw per step, scattered to floors) is the obvious next speed-up for the JAX env. The Warp env makes it moot for training.
+
 ## Backlog: to come back to
 
 These were recommended along the way and deferred, so Phases 3 and 4 could go ahead first. Logged 2026-10-10.
@@ -565,7 +585,7 @@ Added after Phases 3 and 4:
 - [ ] **Run the learning-quality check in JAX.** It is now cheap: 5M steps of `full` take under a minute at the fast settings.
 - [ ] **Port the imitation warm start to JAX,** so the `full` recipe (behaviour cloning, then PPO at learning rate 3e-5) can run there.
 - [ ] **Port the target action mode and the `custom` observation to JAX.**
-- [ ] **Profile the JAX env** with `jax.profiler` to find what limits it at about 660k env steps/s; applying the actions is half of each step.
+- [x] **Profile the JAX env** with `jax.profiler` to find what limits it at about 660k env steps/s; applying the actions is half of each step. Done (`scripts/profile_jax_env.py`, each part compiled and timed on its own): drawing and queueing the arrivals is the biggest part, 55–59% of a step on the GPU; the lifts' actions take about 35–40% (boarding is a cumsum and a scatter over each 512-slot queue), the kinematics substeps 8–10%, the observation 3–4%, and the batched auto-reset adds 9–11%. The parts overlap a little when fused, so they sum to just over 100%.
 - [ ] **Try EnvPool's XLA interface,** which lets JAX step EnvPool envs from inside `jit`, as a bridge between Phases 3 and 4.
 
 Added after Warp:
