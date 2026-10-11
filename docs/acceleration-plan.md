@@ -566,7 +566,7 @@ Added after Phases 3 and 4:
 - [ ] **Port the imitation warm start to JAX,** so the `full` recipe (behaviour cloning, then PPO at learning rate 3e-5) can run there.
 - [ ] **Port the target action mode and the `custom` observation to JAX.**
 - [ ] **Profile the JAX env** with `jax.profiler` to find what limits it at about 660k env steps/s; applying the actions is half of each step.
-- [ ] **Try EnvPool's XLA interface,** which lets JAX step EnvPool envs from inside `jit`, as a bridge between Phases 3 and 4.
+- [x] **Try EnvPool's XLA interface,** which lets JAX step EnvPool envs from inside `jit`, as a bridge between Phases 3 and 4. Tried (`scripts/time_envpool_xla.py`): our trimmed wheel's `pool.xla()` works, and a `lax.scan` steps EnvPool on the GPU at 384k env steps/s with 64 envs and 696k with 256 (72–75% of its Python API's 530k and 930k), 3–4× the JAX and Warp envs at those small batches. But it deadlocked intermittently: always on CPU JAX past a few steps, and once on the GPU at 1,024 envs. Not wired into the JAX PPO: Warp is faster at scale and reliable.
 
 Added after Warp:
 
