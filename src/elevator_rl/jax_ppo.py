@@ -18,6 +18,11 @@ for `TimeLimit.truncated`.
     uv run --group jax-cuda python -m elevator_rl.jax_ppo --preset full \\
         --n-envs 1024 --n-steps 8 --batch-size 2048 --timesteps 5000000
 
+With `--algo mappo` the lifts share one actor, each acting on its own block
+of the "relative" observation (and a one-hot lift id), while the critic sees
+the whole observation, as in MAPPO; `transfer` moves such an actor to a
+building with a different number of lifts.
+
 With `--pretrain N` it first imitates the collective heuristic on N samples
 (`jax_imitate`), as the SB3 recipe for `full` does.
 """
@@ -53,6 +58,11 @@ class PPOConfig(NamedTuple):
     # >0: a first layer of this width applied to each lift's block of the
     # "relative" observation with shared weights, before net_arch.
     lift_encoder: int = 0
+    # "mappo": one actor shared by the lifts, each on its own block of the
+    # "relative" observation (plus a one-hot lift id if lift_id), and the
+    # critic on the whole observation. "ppo": one actor over everything.
+    algo: str = "ppo"
+    lift_id: bool = True
 
 
 # -- network -------------------------------------------------------------------
@@ -115,18 +125,61 @@ def make_features(env):
 
 def init_params(key, env: JaxBuildingEnv, config: PPOConfig):
     k_pi, k_vf = jax.random.split(key)
-    n_logits = env.config.n_lifts * env.n_actions
+    n_lifts = env.config.n_lifts
     # SB3's gains: sqrt(2) for hidden layers, 0.01 for the policy head, 1 for the value head.
-    return {
-        "pi": init_net(k_pi, env, config, n_logits, 0.01),
-        "vf": init_net(k_vf, env, config, 1, 1.0),
-    }
+    vf = init_net(k_vf, env, config, 1, 1.0)
+    if config.algo == "mappo":
+        if env.obs_type != "relative":
+            raise ValueError("mappo needs the per-lift blocks of the relative observation")
+        n_in = feature_size(env) // n_lifts + (n_lifts if config.lift_id else 0)
+        hidden = ((config.lift_encoder,) if config.lift_encoder else ()) + tuple(config.net_arch)
+        return {"actor": init_mlp(k_pi, n_in, hidden, env.n_actions, 0.01), "vf": vf}
+    if config.algo != "ppo":
+        raise ValueError(f"unknown algo {config.algo!r}: ppo or mappo")
+    return {"pi": init_net(k_pi, env, config, n_lifts * env.n_actions, 0.01), "vf": vf}
+
+
+def lift_views(obs, n_lifts, lift_id):
+    """Each lift's block of the observation, (..., n_lifts, block), with a
+    one-hot lift id appended if lift_id."""
+    views = obs.reshape(*obs.shape[:-1], n_lifts, -1)
+    if not lift_id:
+        return views
+    ids = jnp.broadcast_to(jnp.eye(n_lifts, dtype=obs.dtype), (*obs.shape[:-1], n_lifts, n_lifts))
+    return jnp.concatenate([views, ids], axis=-1)
+
+
+def transfer(params, env, config: PPOConfig, key):
+    """A mappo actor trained with one lift count, made ready for `env`'s.
+
+    The actor's weights carry over; with lift ids, lifts beyond the trained
+    count get a zero id weight (they look like no lift in particular) and
+    surplus ids are dropped. The critic depends on the lift count, so it is
+    fresh: fine for evaluation, to be trained by any fine-tuning.
+    """
+    if "actor" not in params:
+        raise ValueError("only a mappo actor transfers across lift counts")
+    fresh = init_params(key, env, config)
+    actor = list(params["actor"])
+    if config.lift_id:
+        block = feature_size(env) // env.config.n_lifts
+        w = actor[0]["w"]
+        trained = w.shape[0] - block
+        n_lifts = env.config.n_lifts
+        ids = jnp.zeros((n_lifts, w.shape[1]), w.dtype)
+        ids = ids.at[: min(trained, n_lifts)].set(w[block : block + min(trained, n_lifts)])
+        actor[0] = {"w": jnp.concatenate([w[:block], ids]), "b": actor[0]["b"]}
+    return {"actor": actor, "vf": fresh["vf"]}
 
 
 def policy(params, obs, n_lifts):
     """Per-lift logits (..., n_lifts, n_actions) and the value (...)."""
-    logits = mlp(params["pi"], obs)
-    logits = logits.reshape(*obs.shape[:-1], n_lifts, -1)
+    if "actor" in params:  # mappo: the shared actor on each lift's view
+        block = obs.shape[-1] // n_lifts
+        lift_id = params["actor"][0]["w"].shape[0] > block
+        logits = mlp(params["actor"], lift_views(obs, n_lifts, lift_id))
+    else:
+        logits = mlp(params["pi"], obs).reshape(*obs.shape[:-1], n_lifts, -1)
     return logits, mlp(params["vf"], obs)[..., 0]
 
 
@@ -349,6 +402,8 @@ def train(
     update = jax.jit(update, donate_argnums=0)
     evaluate = jax.jit(make_evaluate(eval_env, n_eval_episodes))
     key = jax.random.key(seed)
+    if params is not None:  # `update` donates the runner's buffers; the caller keeps theirs
+        params = jax.tree.map(jnp.copy, params)
     runner = init(key, params)
     per_update = config.n_envs * config.n_steps
     n_updates = max(total_timesteps // per_update, 1)
@@ -422,6 +477,10 @@ def main(argv=None):
     parser.add_argument(
         "--lift-encoder", type=int, default=0, help="width of a shared per-lift first layer"
     )
+    parser.add_argument("--algo", choices=("ppo", "mappo"), default="ppo")
+    parser.add_argument(
+        "--no-lift-id", action="store_true", help="mappo: don't tell the actor which lift it is"
+    )
     parser.add_argument("--eval-freq", type=int, default=100_000)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--backend", choices=BACKENDS, default="jax", help="env implementation")
@@ -440,6 +499,8 @@ def main(argv=None):
         learning_rate=args.learning_rate,
         net_arch=tuple(args.net_arch),
         lift_encoder=args.lift_encoder,
+        algo=args.algo,
+        lift_id=not args.no_lift_id,
     )
     print(f"devices: {jax.devices()}")
     params = None

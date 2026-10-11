@@ -129,3 +129,77 @@ def test_ppo_learns_the_original_preset():
         "original", 200_000, PPOConfig(net_arch=(256, 256)), eval_freq=200_000, verbose=False
     )
     assert history[-1]["eval_mean"] > 100
+
+
+@pytest.mark.parametrize("lift_id", [True, False])
+def test_mappo_log_probs_match_a_lift_by_lift_reference(lift_id):
+    env = JaxBuildingEnv("full")
+    config = PPOConfig(net_arch=(16,), algo="mappo", lift_id=lift_id)
+    params = init_params(jax.random.key(0), env, config)
+    assert "pi" not in params
+    block = env.observation_size // 4
+    assert params["actor"][0]["w"].shape[0] == block + (4 if lift_id else 0)
+    obs = jax.random.normal(jax.random.key(1), (3, env.observation_size))
+    actions = jax.random.randint(jax.random.key(2), (3, 4), 0, env.n_actions)
+    logits, value = policy(params, obs, 4)
+    assert logits.shape == (3, 4, env.n_actions)
+    assert value.shape == (3,)
+    expected = 0.0
+    for lift in range(4):
+        x = obs[:, lift * block : (lift + 1) * block]
+        if lift_id:
+            x = jnp.concatenate([x, jnp.broadcast_to(jnp.eye(4)[lift], (3, 4))], axis=-1)
+        log_p = jax.nn.log_softmax(mlp(params["actor"], x))
+        expected += log_p[jnp.arange(3), actions[:, lift]]
+    np.testing.assert_allclose(log_prob(logits, actions), expected, rtol=1e-5, atol=1e-5)
+
+
+def test_mappo_trains_and_warm_starts():
+    from elevator_rl.jax_imitate import warm_start
+
+    env = JaxBuildingEnv("multi", reward_shaping=True, max_steps=20)
+    config = PPOConfig(n_envs=8, n_steps=10, batch_size=40, net_arch=(16,), algo="mappo")
+    params, stats = warm_start(env, "multi", config, n_samples=512, epochs=2)
+    assert np.isfinite(stats["log_likelihood"])
+    init, update = make_train(env, config)
+    runner = init(jax.random.key(0), params)
+    runner, metrics = jax.jit(update)(runner)
+    assert np.isfinite(float(metrics["value_loss"]))
+    moved = jax.tree.map(lambda a, b: bool((a != b).any()), params, runner.params)
+    assert all(jax.tree.leaves(moved))
+
+
+@pytest.mark.parametrize("lift_id", [True, False])
+@pytest.mark.parametrize("n_lifts", [2, 6])
+def test_mappo_actor_transfers_across_lift_counts(n_lifts, lift_id):
+    from dataclasses import replace
+
+    from elevator_rl.building import PRESETS
+    from elevator_rl.jax_ppo import make_evaluate, transfer
+
+    config = PPOConfig(net_arch=(16,), algo="mappo", lift_id=lift_id)
+    params = init_params(jax.random.key(0), JaxBuildingEnv("full"), config)
+    env = JaxBuildingEnv(replace(PRESETS["full"], n_lifts=n_lifts), max_steps=20)
+    moved = transfer(params, env, config, jax.random.key(1))
+    logits, value = policy(moved, jnp.zeros((2, env.observation_size)), n_lifts)
+    assert logits.shape == (2, n_lifts, env.n_actions)
+    # The shared layers, and the ids of the lifts both buildings have, carry over.
+    np.testing.assert_array_equal(moved["actor"][-1]["w"], params["actor"][-1]["w"])
+    block = env.observation_size // n_lifts
+    np.testing.assert_array_equal(moved["actor"][0]["w"][:block], params["actor"][0]["w"][:block])
+    if lift_id:
+        kept = min(n_lifts, 4)
+        np.testing.assert_array_equal(
+            moved["actor"][0]["w"][block : block + kept],
+            params["actor"][0]["w"][block : block + kept],
+        )
+    rewards = jax.jit(make_evaluate(env, 2))(moved, jax.random.key(2))
+    assert np.isfinite(np.asarray(rewards)).all()
+
+
+def test_ppo_params_do_not_transfer():
+    from elevator_rl.jax_ppo import transfer
+
+    env = JaxBuildingEnv("full")
+    with pytest.raises(ValueError, match="mappo"):
+        transfer(init_params(jax.random.key(0), env, PPOConfig()), env, PPOConfig(), None)

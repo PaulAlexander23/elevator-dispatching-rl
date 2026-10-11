@@ -193,10 +193,20 @@ PettingZoo is not the core: it is stateful, steps one env at a time with dicts k
 - **Loss:** the PPO loss, the tuned settings, the same Hydra config tree (`algo=mappo`). Both the JAX and Warp envs work.
 - **Warm start:** `full` learns only from the imitation warm start, so clone the heuristic's per-lift actions into the shared actor first.
 
-- [ ] Implement the actor, critic and config switch; test the per-lift log-probabilities against a lift-by-lift reference.
-- [ ] Compare on `full` at 20M and 50M steps and at equal wall-clock time (3 seeds each) against tuned PPO and against item 3's shared-encoder PPO. That separates the effect of sharing from the effect of a centralised head.
-- [ ] Transfer: train with 4 lifts, then evaluate with no further training on 2, 3, 6 and 8 lifts against the heuristic in each building. Then fine-tune briefly and compare with training from scratch.
-- [ ] Without the lift id as well, to see if the lifts need to know which one they are.
+- [x] Implement the actor, critic and config switch; test the per-lift log-probabilities against a lift-by-lift reference.
+- [ ] (waits for the GPU) Compare on `full` at 20M and 50M steps and at equal wall-clock time (3 seeds each) against tuned PPO and against item 3's shared-encoder PPO. That separates the effect of sharing from the effect of a centralised head.
+- [ ] (script ready; waits for the GPU) Transfer: train with 4 lifts, then evaluate with no further training on 2, 3, 6 and 8 lifts against the heuristic in each building. Then fine-tune briefly and compare with training from scratch.
+- [ ] (waits for the GPU) Without the lift id as well, to see if the lifts need to know which one they are.
+
+### Progress: built; the runs wait for the GPU
+
+- **Config.** `PPOConfig.algo = "mappo"` (`--algo mappo`, `ppo.algo=mappo` in Hydra) and `lift_id` (`--no-lift-id`, `ppo.lift_id=false`). It is a field of the `ppo` group rather than a Hydra config group of its own, so every existing override and search space still applies.
+- **Actor.** `params["actor"]` is one MLP applied to each lift's 305-value block, plus a one-hot lift id, with layers `lift_encoder` (if set) then `net_arch`, and a head of one lift's actions. `policy` returns the same (…, lifts, actions) logits as PPO, so the loss, sampling, evaluation and `jax_imitate`'s warm start are unchanged. Note the cost: the actor runs once per lift, so 256 × 256 costs about 4 × 144k multiply-adds per sample against PPO's 381k; the comparison should report steps/s too.
+- **Critic.** `params["vf"]`, today's value network on the whole observation (with the encoder if `lift_encoder` is set).
+- **Transfer.** `transfer(params, env, config, key)` moves the actor to another lift count: the shared layers carry over, lift ids beyond the trained count get a zero weight, and the critic is fresh (it depends on the lift count). `scripts/mappo_transfer.py` trains with 4 lifts, then evaluates on 2, 3, 6 and 8 against the heuristic, and with `--finetune N` compares fine-tuning with a warm start from scratch in each building.
+- **Tuned settings as a config.** `conf/tuned.yaml` holds the tuned PPO (warm start, 1,024 × 8 : 2,048, 10 epochs, lr 5.21e-5, clip 0.1, entropy 2.77e-5, value 0.25, Warp), so the comparisons are `python -m elevator_rl.tune -m --config-name tuned seed=0,1,2 ppo.algo=ppo,mappo timesteps=20_000_000`.
+- **Fixed on the way.** `jax_ppo.train` donated the caller's `params` to the first update, so reusing them after training failed ("Array has been deleted"). It now copies them first.
+- **Tests.** Per-lift log-probabilities against a lift-by-lift reference, with and without lift ids; training and warm-starting MAPPO; transfer to 2 and 6 lifts, with evaluation there. Full suite: 255 passed.
 
 ## 6. 200M-step run
 
