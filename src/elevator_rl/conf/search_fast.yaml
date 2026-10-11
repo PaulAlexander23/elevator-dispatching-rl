@@ -1,0 +1,11 @@
+# The Optuna search space for the fast settings (1024 envs x 8 steps, after a
+# warm start): can a larger learning rate or more epochs win back what large
+# minibatches lose per sample?
+ppo.learning_rate: {low: 1.0e-5, high: 1.0e-3, log: true}
+ppo.n_epochs: {choices: [1, 3, 5, 10]}
+ppo.batch_size: {choices: [512, 2048, 8192]}  # must divide n_envs x n_steps
+ppo.ent_coef: {low: 1.0e-5, high: 0.01, log: true}
+ppo.clip_range: {choices: [0.05, 0.1, 0.2, 0.3]}
+ppo.gae_lambda: {choices: [0.9, 0.95, 0.98]}
+ppo.gamma: {choices: [0.98, 0.99, 0.995]}
+ppo.vf_coef: {choices: [0.25, 0.5, 1.0]}
