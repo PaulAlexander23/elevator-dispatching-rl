@@ -12,7 +12,8 @@ steps/s against 1,739, on a GTX 1080.
   turned into a table of its data.
 - [Follow-up plan](follow-up-plan.md): what comes next, in order: packaging
   with scikit-build-core, cheaper JAX arrivals, a smaller observation, a
-  multi-agent env interface, MAPPO (our own and Mava's) and a 200M-step run.
+  multi-agent env interface, our own MAPPO and a 200M-step run. MAPPO with
+  Mava waits in its backlog, for dependency reasons it records.
 - [Setup notes](setup-notes.md): what it took to run every backend on the
   development machine, covering Python 3.12, the dependency groups, CUDA 12
   builds for a Pascal GPU, `LD_LIBRARY_PATH`, fused multiply-adds and

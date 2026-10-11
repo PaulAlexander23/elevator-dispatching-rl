@@ -1,22 +1,21 @@
 # Follow-up Plan: MAPPO and the Open Backlog
 
-Started 2026-10-11. This plan takes over the seven open items from the [acceleration plan](acceleration-plan.md), which is now complete.
+Started 2026-10-11. This plan takes over the open items from the [acceleration plan](acceleration-plan.md), which is now complete.
 
 ## Summary
 
-Seven items remain: two speed-ups, one packaging change, three steps to multi-agent PPO (MAPPO), and a long training run. Each is one session and one PR, in the order below. The run goes last, so its 40 minutes are spent once, on the best setup found.
+Six items remain: two speed-ups, one packaging change, two steps to multi-agent PPO (MAPPO), and a long training run. MAPPO with Mava is deferred to the backlog: its pinned dependencies clash with ours (see Backlog). Each is one session and one PR, in the order below. The run goes last, so its 40 minutes are spent once, on the best setup found.
 
 | # | Item | Kind | Done when |
 | --: | --- | --- | --- |
 | 1 | Packaging with scikit-build-core | Build | `uv sync` builds the C++ module; `ELEVATOR_NO_CPP=1` installs pure Python |
 | 2 | Cheaper arrivals in the JAX env | Speed | Arrivals under 15% of a JAX env step (now 55–59%), parity tests green |
 | 3 | Smaller observation or a shared per-lift encoder | Speed | Faster PPO epochs with reward within noise of 77.0 at 50M steps |
-| 4 | Multi-agent env interface | MARL | Per-lift views, global state and team reward on the JAX and Warp envs; the Mava install question answered |
+| 4 | Multi-agent env interface | MARL | Per-lift views, global state and team reward on the JAX and Warp envs |
 | 5 | Our own MAPPO in `jax_ppo` | MARL | MAPPO vs PPO on `full`, at equal steps and equal time, 3 seeds; transfer across lift counts measured |
-| 6 | MAPPO with Mava | MARL | Mava's `ff_mappo` trains on our env and checks item 5's result |
-| 7 | 200M-step run | Reward | The best configuration from items 3–6 run for 200M steps, 3 seeds |
+| 6 | 200M-step run | Reward | The best configuration from items 3–5 run for 200M steps, 3 seeds |
 
-Items 1 and 2 stand alone. Item 3's shared encoder is the same network as item 5's actor, so it comes first and gives MAPPO a centralised baseline built from the same parts. Item 4 starts with a short check of Mava's dependencies, so item 6's main risk is known before items 5 and 6 are built.
+Items 1 and 2 stand alone. Item 3's shared encoder is the same network as item 5's actor, so it comes first and gives MAPPO a centralised baseline built from the same parts. Item 4 keeps Mava's data layout, so adding Mava later needs only a thin wrapper.
 
 ## Baselines
 
@@ -87,7 +86,7 @@ The `relative` observation is already four per-lift blocks of 305 values: a head
 
 ## 4. Multi-agent env interface
 
-**Goal.** A functional multi-agent API over the JAX and Warp envs that both MAPPO routes can use, plus a decision on how to run Mava.
+**Goal.** A functional multi-agent API over the JAX and Warp envs that our MAPPO uses, laid out as Mava expects so Mava can be added later.
 
 **Interface.** Mava's env API is Jumanji's (`reset(key) -> (state, timestep)`, `step(state, action) -> (state, timestep)`, the key kept in the state) plus `num_agents`, `time_limit` and `action_dim`. Its observation is a named tuple with an agents axis:
 
@@ -98,12 +97,11 @@ The `relative` observation is already four per-lift blocks of 305 values: a head
 | `global_state` | (lifts, state) | the full 1,220-value observation, repeated for each lift |
 | `step_count` | (lifts,) | `state.steps` |
 
-Our JAX env already has this shape: `step(state, actions)` is pure, the PRNG key lives in `EnvState`, and the observation is per-lift blocks. So we use Mava's layout as our own and add no new abstraction. One `MultiAgentEnv` wrapper over `JaxBuildingEnv` returns these arrays, the team reward repeated per lift, and `done`; a batched version wraps the Warp env's vectorised step for our own MAPPO. The per-lift block is the same size whatever the lift count (its "other lifts" field is scaled by lifts − 1), so one policy can run in buildings with 2, 4 or 6 lifts.
+Our JAX env already has this shape: `step(state, actions)` is pure, the PRNG key lives in `EnvState`, and the observation is per-lift blocks. So we use Mava's layout as our own and add no new abstraction, which also keeps the deferred Mava item cheap. One `MultiAgentEnv` wrapper over `JaxBuildingEnv` returns these arrays, the team reward repeated per lift, and `done`; a batched version wraps the Warp env's vectorised step for our own MAPPO. The per-lift block is the same size whatever the lift count (its "other lifts" field is scaled by lifts − 1), so one policy can run in buildings with 2, 4 or 6 lifts.
 
 PettingZoo is not the core: it is stateful, steps one env at a time with dicts keyed by agent, and can't run inside `jit`. A `ParallelEnv` adapter over the Python or C++ env is an optional extra, for RLlib or BenchMARL.
 
-- [ ] **Spike first: can Mava run here?** Mava is meant to be cloned and run, not installed as a library. It pins `jax==0.5.3`, `numpy==1.26.4`, `gymnasium==1.0.0`, `flax<0.10.4` and Python below 3.13, and pulls several packages from git (a JaxMARL fork, gigastep, smaclite). We run JAX 0.11.2 and NumPy 2. Try a separate venv with Mava's pins plus our package installed without dependencies, and check that `jax_env` imports and runs on JAX 0.5.3 with the CUDA 12 plugin on the GTX 1080. If not, the fallback is a Mava fork with its pins raised, which is a bigger job. Record the answer before item 5.
-- [ ] Write the wrapper and its `observation_spec` and `action_spec`, following Mava's `mava/wrappers/jumanji.py`.
+- [ ] Write the wrapper and its `observation_spec` and `action_spec`, following the layout of Mava's `mava/wrappers/jumanji.py`, without depending on Mava.
 - [ ] Tests: per-lift views reassemble the single-agent observation exactly, rewards and dones match the single-agent env, and the wrapper runs under `jit` and `vmap`.
 - [ ] Optional: the PettingZoo adapter and its `parallel_api_test`.
 
@@ -123,21 +121,11 @@ PettingZoo is not the core: it is stateful, steps one env at a time with dicts k
 - [ ] Transfer: train with 4 lifts, then evaluate with no further training on 2, 3, 6 and 8 lifts against the heuristic in each building. Then fine-tune briefly and compare with training from scratch.
 - [ ] Without the lift id as well, to see if the lifts need to know which one they are.
 
-## 6. MAPPO with Mava
-
-**Goal.** Train Mava's MAPPO on our env as an outside check on item 5. If both agree, the result does not come from a bug in our own code.
-
-- [ ] Using item 4's spike, register our env in Mava's `make_env` and add a Hydra env config, then run `mava/systems/ppo/anakin/ff_mappo.py`.
-- [ ] Match settings to item 5 where Mava exposes them: envs, rollout length, epochs, minibatches, learning rate, clip, network size.
-- [ ] **The warm start.** Mava has none, and `full` learns slowly from scratch. Either load our cloned actor's weights into Mava's network, or compare both MAPPOs from scratch on an easier preset (`hall_calls` or `kinematic`) as well as on `full`.
-- [ ] Optional: `rec_mappo` (recurrent), since a lift may gain from remembering recent calls.
-- [ ] Report reward at equal steps against item 5 (3 seeds) and steps/s on the JAX env. Mava probably can't use the Warp env: it vmaps a single env, and the Warp kernel is already batched.
-
-## 7. 200M-step run
+## 6. 200M-step run
 
 **Goal.** Learn where training levels off. Tuned PPO was still rising at 77.0 after 50M steps.
 
-- [ ] Run the best configuration from items 3–6, and tuned PPO if that is a different setup, for 200M steps on 3 seeds. At about 88k PPO steps/s that is about 40 minutes per seed, less after items 2 and 3.
+- [ ] Run the best configuration from items 3–5, and tuned PPO if that is a different setup, for 200M steps on 3 seeds. At about 88k PPO steps/s that is about 40 minutes per seed, less after items 2 and 3.
 - [ ] Run GPU jobs one at a time: each JAX process takes 75% of the GPU's memory.
 - [ ] Plot reward against steps and against minutes next to the 50M runs, and report the final level and the best eval.
 
@@ -153,3 +141,12 @@ From the acceleration plan and its sessions:
 ## Backlog
 
 Items deferred while working through this plan go here.
+
+- [ ] **MAPPO with Mava (`id-mava`),** deferred on 2026-10-11 because of its dependencies. Train Mava's `ff_mappo` on our env as an outside check on item 5: if both agree, the result does not come from a bug in our own code. The complications:
+    - **Pinned, old dependencies.** Mava pins `jax==0.5.3`, `numpy==1.26.4`, `gymnasium==1.0.0`, `scipy==1.12.0`, `flax<0.10.4` and Python below 3.13. We run JAX 0.11.2 and NumPy 2, and the Warp env needs our JAX. It can't share our venv.
+    - **Not a library.** Mava is meant to be cloned and run as research code, and it installs several packages from git (a JaxMARL fork, gigastep, smaclite) plus MuJoCo and Brax.
+    - **The GPU is unchecked.** Whether JAX 0.5.3's CUDA 12 plugin runs on the GTX 1080 (Pascal) is unknown.
+    - **No warm start.** `full` learns only from the imitation warm start, which Mava lacks. We would load our cloned actor into Mava's network, or compare both MAPPOs from scratch on an easier preset (`hall_calls` or `kinematic`).
+    - **JAX env only.** Mava vmaps a single env, and the Warp kernel is already batched, so Mava would probably train on the slower JAX env.
+
+    To pick it up, start with a spike: a separate venv with Mava's pins, our package installed without dependencies, and a check that `jax_env` runs on JAX 0.5.3 on the GPU. If it does, register our env in Mava's `make_env` with item 4's wrapper and run `mava/systems/ppo/anakin/ff_mappo.py` at item 5's settings (3 seeds). If not, the fallback is a Mava fork with its pins raised, a bigger job. `rec_mappo` (recurrent) is an optional extra.
