@@ -4,7 +4,9 @@
 
 Reads every `result.json` under the given directories (from `elevator_rl.tune`
 or `elevator_rl.tune_search`), groups the runs by their overrides apart from
-`seed`, and prints a Markdown table sorted by final score.
+`seed`, and prints a Markdown table sorted by final score. `--importance`
+adds, for an Optuna search, how much each hyperparameter mattered (PED-ANOVA:
+how differently it is spread in the best trials than in all of them).
 """
 
 import argparse
@@ -66,9 +68,22 @@ def table(rows):
     return "\n".join(lines)
 
 
+def importances(search_dir):
+    """{hyperparameter: importance} for the Optuna study in `search_dir`."""
+    import optuna
+
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    path = Path(search_dir)
+    study = optuna.load_study(study_name=path.name, storage=f"sqlite:///{path / 'study.db'}")
+    # PED-ANOVA needs no scikit-learn, unlike Optuna's default fANOVA.
+    evaluator = optuna.importance.PedAnovaImportanceEvaluator()
+    return optuna.importance.get_param_importances(study, evaluator=evaluator)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("dirs", nargs="+")
+    parser.add_argument("--importance", action="store_true", help="for Optuna search dirs")
     args = parser.parse_args(argv)
     results = load(args.dirs)
     common = sorted(common_overrides(results))
@@ -76,6 +91,11 @@ def main(argv=None):
         print("All runs: " + " ".join(f"`{o}`" for o in common) + "\n")
     rows = summarise(results)
     print(table(rows))
+    if args.importance:
+        for d in args.dirs:
+            print(f"\nImportance in {d}:\n\n| Hyperparameter | Importance |\n| --- | --: |")
+            for name, value in importances(d).items():
+                print(f"| {name} | {value:.2f} |")
     return rows
 
 
