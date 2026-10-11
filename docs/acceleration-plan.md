@@ -560,8 +560,8 @@ Drawing and queueing each step's arrivals takes 55–59% of a JAX env step on th
 
 _Source: `scripts/profile_jax_env.py --n-envs 1024 16384`; each part vmapped, compiled and timed on its own from a mid-episode state; shares of the whole step._
 
-- **Arrivals are masked work.** Each env draws a Poisson count per floor (capped at 16), a destination per possible arrival and writes them into fixed 512-slot queues, for all 30 floors, every step, whether anyone arrives or not. The Warp env draws only the arrivals that happen.
-- **On the CPU the share is larger still** (83% at 64 envs), so the random draws, not the queue writes, are the likely cost.
+- **Arrivals are masked work.** Each env draws a destination for all 16 arrival slots on each of 30 floors with `jax.random.categorical` over 30 floors, which is Gumbel-max: about 14,400 random numbers per env per step, whether anyone arrives or not (about one person does). The Warp env draws only the arrivals that happen.
+- **On the CPU the share is larger still** (83% at 64 envs), which fits random-number generation, not the queue writes, being the cost.
 - A cheaper arrival model (one Poisson draw per step, scattered to floors) is the obvious next speed-up for the JAX env. The Warp env makes it moot for training.
 
 ## Backlog: to come back to
