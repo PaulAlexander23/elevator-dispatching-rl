@@ -119,10 +119,37 @@ The `relative` observation is already four per-lift blocks of 305 values: a head
 - **A shared per-lift encoder.** One MLP (305 → 128) applied to each lift's block with shared weights, the four outputs concatenated (512) and passed to the existing 256 layer. The first layer drops from 312k weights to 39k and from 312k to 156k multiply-adds per sample. This is the same encoder item 5's actor will use.
 - **A narrower window.** Keep ±k floors at full resolution and pool the floors beyond into a few coarse bins (for example 1, 2, 4, 8 floors wide). With k = 8, each block shrinks from 305 to about 140 values.
 
-- [ ] Implement the shared encoder as an option of the JAX PPO's networks (`net_arch` stays the hidden layers after it).
+- [x] Implement the shared encoder as an option of the JAX PPO's networks (`net_arch` stays the hidden layers after it).
 - [ ] Implement the narrower window as an observation option in the JAX and Warp envs, with parity against Python, if the encoder alone doesn't reach the goal.
-- [ ] The imitation warm start must clone into the new network, so check `jax_imitate` works with it.
-- [ ] Compare at 20M steps (3 seeds, tuned settings) against 73.6 ± 2.0, then the best at 50M against 77.0 ± 2.4. Report PPO steps/s and `profile_jax_ppo.py`'s epoch share.
+- [x] The imitation warm start must clone into the new network, so check `jax_imitate` works with it.
+- [ ] (waits for the GPU) Compare at 20M steps (3 seeds, tuned settings) against 73.6 ± 2.0, then the best at 50M against 77.0 ± 2.4. Report PPO steps/s and `profile_jax_ppo.py`'s epoch share.
+
+### Progress: built; the comparison waits for the GPU
+
+`PPOConfig.lift_encoder` (`--lift-encoder` on the command line, `ppo.lift_encoder` in Hydra) adds a first layer of that width applied to each lift's 305-value block with shared weights, in both the policy and value networks; `net_arch` is the layers after it. `mlp` spots the encoder by its narrower input and runs it as one 2-D matmul over (samples × lifts) rows. Tests check it against a lift-by-lift reference, train with it, and warm-start it with `jax_imitate`. It works on both envs.
+
+**A correction to the estimate above.** Shared weights cut the parameters, not the work: each sample still runs the encoder 4 times, 4 × 305 × 128 = 156k multiply-adds, and the concatenated 512 then needs a 512 × 256 layer (131k). Per sample:
+
+| Network | Multiply-adds |
+| --- | --: |
+| 1,220 → 256 → 256 → 16 (today) | 381k |
+| encoder 128, then 256 → 16 | 291k |
+| encoder 64, then 256 → 256 → 16 | 209k |
+| encoder 32, then 256 → 256 → 16 | 135k |
+| encoder 32, then 256 → 16 | 70k |
+
+CPU profile, `scripts/profile_jax_ppo.py --backends warp --settings 1024x8:2048 --n-epochs 10`, 3 repeats. The GPU numbers will be the ones that count.
+
+| Network | Epochs + GAE, ms | PPO steps/s |
+| --- | --: | --: |
+| 256 × 256 (today) | 615 | 11,920 |
+| 256 | 481 | 15,016 |
+| encoder 128, then 256 | 723 (891 as a batched matmul) | 10,172 |
+| encoder 64, then 256 × 256 | 558 | 13,115 |
+| encoder 32, then 256 × 256 | 460 | 15,604 |
+| encoder 32, then 256 | 300 | 22,868 |
+
+On the CPU the 128-wide encoder is slower than today's network, despite fewer multiply-adds; only narrow encoders (32) are clearly faster. If the GPU agrees, the reward comparison is between encoder widths 32 and 64 rather than 128.
 
 ## 4. Multi-agent env interface
 

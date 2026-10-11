@@ -50,6 +50,9 @@ class PPOConfig(NamedTuple):
     vf_coef: float = 0.5
     max_grad_norm: float = 0.5
     net_arch: tuple = (64, 64)  # SB3's MlpPolicy default
+    # >0: a first layer of this width applied to each lift's block of the
+    # "relative" observation with shared weights, before net_arch.
+    lift_encoder: int = 0
 
 
 # -- network -------------------------------------------------------------------
@@ -68,9 +71,31 @@ def init_mlp(key, n_in, hidden, n_out, out_gain):
 
 
 def mlp(layers, x):
+    """The MLP's output for x. A first layer narrower than x is a per-lift
+    encoder: it is applied to each equal block of x (one per lift) with
+    shared weights, and the blocks' outputs are concatenated."""
+    first = layers[0]["w"].shape[0]
+    if first != x.shape[-1]:
+        lead = x.shape[:-1]
+        blocks = x.reshape(-1, first)  # one row per lift: a plain 2-D matmul
+        x = jnp.tanh(blocks @ layers[0]["w"] + layers[0]["b"]).reshape(*lead, -1)
+        layers = layers[1:]
     for layer in layers[:-1]:
         x = jnp.tanh(x @ layer["w"] + layer["b"])
     return x @ layers[-1]["w"] + layers[-1]["b"]
+
+
+def init_net(key, env, config: PPOConfig, n_out, out_gain):
+    """An MLP over the env's features, with the per-lift encoder if configured."""
+    if not config.lift_encoder:
+        return init_mlp(key, feature_size(env), config.net_arch, n_out, out_gain)
+    if env.obs_type != "relative":
+        raise ValueError("lift_encoder needs the per-lift blocks of the relative observation")
+    n_lifts = env.config.n_lifts
+    k_enc, k_mlp = jax.random.split(key)
+    encoder = _dense(k_enc, feature_size(env) // n_lifts, config.lift_encoder, np.sqrt(2))
+    width = n_lifts * config.lift_encoder
+    return [encoder, *init_mlp(k_mlp, width, config.net_arch, n_out, out_gain)]
 
 
 def feature_size(env):
@@ -93,8 +118,8 @@ def init_params(key, env: JaxBuildingEnv, config: PPOConfig):
     n_logits = env.config.n_lifts * env.n_actions
     # SB3's gains: sqrt(2) for hidden layers, 0.01 for the policy head, 1 for the value head.
     return {
-        "pi": init_mlp(k_pi, feature_size(env), config.net_arch, n_logits, 0.01),
-        "vf": init_mlp(k_vf, feature_size(env), config.net_arch, 1, 1.0),
+        "pi": init_net(k_pi, env, config, n_logits, 0.01),
+        "vf": init_net(k_vf, env, config, 1, 1.0),
     }
 
 
@@ -394,6 +419,9 @@ def main(argv=None):
     parser.add_argument("--n-epochs", type=int, default=3)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--net-arch", type=int, nargs="+", default=[256, 256])
+    parser.add_argument(
+        "--lift-encoder", type=int, default=0, help="width of a shared per-lift first layer"
+    )
     parser.add_argument("--eval-freq", type=int, default=100_000)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--backend", choices=BACKENDS, default="jax", help="env implementation")
@@ -411,6 +439,7 @@ def main(argv=None):
         n_epochs=args.n_epochs,
         learning_rate=args.learning_rate,
         net_arch=tuple(args.net_arch),
+        lift_encoder=args.lift_encoder,
     )
     print(f"devices: {jax.devices()}")
     params = None

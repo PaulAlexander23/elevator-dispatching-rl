@@ -14,6 +14,7 @@ from elevator_rl.jax_ppo import (  # noqa: E402
     init_params,
     log_prob,
     make_train,
+    mlp,
     policy,
     train,
 )
@@ -69,6 +70,50 @@ def test_update_runs_with_target_actions_and_custom_obs(options):
     assert runner.params["pi"][-1]["w"].shape[1] == env.config.n_lifts * env.n_actions
     runner, metrics = jax.jit(update)(runner)
     assert np.isfinite(float(metrics["value_loss"]))
+
+
+def test_lift_encoder_shares_weights_across_lifts():
+    env = JaxBuildingEnv("full")
+    config = PPOConfig(net_arch=(32,), lift_encoder=8)
+    params = init_params(jax.random.key(0), env, config)
+    block = env.observation_size // env.config.n_lifts
+    encoder, hidden, head = params["pi"]
+    assert encoder["w"].shape == (block, 8)
+    assert hidden["w"].shape == (4 * 8, 32)
+    obs = jax.random.normal(jax.random.key(1), (3, env.observation_size))
+    # Lift by lift: the same encoder on each block, outputs side by side.
+    encoded = jnp.concatenate(
+        [
+            jnp.tanh(obs[:, i * block : (i + 1) * block] @ encoder["w"] + encoder["b"])
+            for i in range(env.config.n_lifts)
+        ],
+        axis=-1,
+    )
+    expected = jnp.tanh(encoded @ hidden["w"] + hidden["b"]) @ head["w"] + head["b"]
+    np.testing.assert_allclose(mlp(params["pi"], obs), expected, rtol=1e-5, atol=1e-6)
+    logits, value = policy(params, obs, env.config.n_lifts)
+    assert logits.shape == (3, 4, env.n_actions)
+    assert value.shape == (3,)
+
+
+def test_lift_encoder_trains_and_warm_starts():
+    from elevator_rl.jax_imitate import warm_start
+
+    env = JaxBuildingEnv("multi", reward_shaping=True, max_steps=20)
+    config = PPOConfig(n_envs=8, n_steps=10, batch_size=40, net_arch=(16,), lift_encoder=8)
+    params, stats = warm_start(env, "multi", config, n_samples=512, epochs=2)
+    assert np.isfinite(stats["log_likelihood"])
+    init, update = make_train(env, config)
+    runner = init(jax.random.key(0), params)
+    runner, metrics = jax.jit(update)(runner)
+    assert np.isfinite(float(metrics["value_loss"]))
+
+
+def test_lift_encoder_needs_the_relative_observation():
+    with pytest.raises(ValueError, match="relative"):
+        init_params(
+            jax.random.key(0), JaxBuildingEnv("multi", obs_type="box"), PPOConfig(lift_encoder=8)
+        )
 
 
 def test_minibatch_must_divide_the_rollout():

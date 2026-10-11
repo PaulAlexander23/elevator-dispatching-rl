@@ -31,6 +31,7 @@ ppo:
   vf_coef: 0.5
   max_grad_norm: 0.5
   net_arch: [256, 256]
+  lift_encoder: 0  # >0: a shared per-lift first layer of this width (relative obs)
 
 hydra:
   run:
