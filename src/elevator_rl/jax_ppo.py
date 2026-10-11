@@ -295,12 +295,15 @@ def train(
     verbose=True,
     backend="jax",
     action_mode="step",
+    callback=None,
 ):
     """Train and return (params, history); history rows are dicts per eval.
 
     `backend` picks the env: "jax" (jax_env) or "warp" (warp_env).
 
     Throughput excludes compilation (the first update) and evaluation.
+    `callback(row)` runs after each eval; returning True stops training early
+    (the hyperparameter search uses it to prune).
     """
     config = config or PPOConfig()
     options = {"obs_type": obs_type, "action_mode": action_mode}
@@ -348,6 +351,8 @@ def train(
                     f"eval {row['eval_mean']:6.1f} ± {row['eval_std']:4.1f}",
                     flush=True,
                 )
+            if callback is not None and callback(row):
+                break
         else:
             train_seconds += time.perf_counter() - t0
     if verbose:
