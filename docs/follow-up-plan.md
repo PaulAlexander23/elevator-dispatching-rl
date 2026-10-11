@@ -168,9 +168,19 @@ Our JAX env already has this shape: `step(state, actions)` is pure, the PRNG key
 
 PettingZoo is not the core: it is stateful, steps one env at a time with dicts keyed by agent, and can't run inside `jit`. A `ParallelEnv` adapter over the Python or C++ env is an optional extra, for RLlib or BenchMARL.
 
-- [ ] Write the wrapper and its `observation_spec` and `action_spec`, following the layout of Mava's `mava/wrappers/jumanji.py`, without depending on Mava.
-- [ ] Tests: per-lift views reassemble the single-agent observation exactly, rewards and dones match the single-agent env, and the wrapper runs under `jit` and `vmap`.
-- [ ] Optional: the PettingZoo adapter and its `parallel_api_test`.
+- [x] Write the wrapper and its `observation_spec` and `action_spec`, following the layout of Mava's `mava/wrappers/jumanji.py`, without depending on Mava.
+- [x] Tests: per-lift views reassemble the single-agent observation exactly, rewards and dones match the single-agent env, and the wrapper runs under `jit` and `vmap`.
+- [ ] Optional: the PettingZoo adapter and its `parallel_api_test`. Not done: nothing here needs it yet.
+
+### Result: done
+
+`elevator_rl.marl_env` has the Mava layout, with no Mava or Jumanji dependency:
+
+- `MultiAgentEnv(env, global_state=True)` wraps one `JaxBuildingEnv`: `reset(key)` and `step(state, action)` return `(state, TimeStep)`, where `TimeStep` has Jumanji's fields (`step_type`, `reward`, `discount`, `observation`, `extras`) and the observation is `ObservationGlobalState` (or `Observation` without the global state). It has `num_agents`, `action_dim`, `time_limit`, `observation_spec()` (as `jax.ShapeDtypeStruct`s) and `action_spec()` (one discrete action per lift, like a Jumanji `MultiDiscreteArray`). No auto-reset, as in Jumanji, where Mava adds its own.
+- `make_vec_env(env, n_envs)` batches the JAX or the Warp env through their own `make_vec_env`, with auto-reset: where an episode ends the timestep is `LAST` and its observation is already the next episode's first, and `extras["terminal_observation"]` holds the one it ended on, for bootstrapping at the time limit. This is the one our MAPPO uses.
+- Episodes only end at the time limit, a truncation, so the discount stays 1 at `LAST`. The action mask is all true: in target mode a lift with a goal ignores its action rather than refusing it.
+- `tests/test_marl_env.py`: the views reassemble the single-agent observation exactly, in step and target modes over a whole episode; rewards, `LAST` and `extras` match the single-agent env; `jit` and `vmap` work; the batched version matches the JAX env's `make_vec_env` step for step, and runs on the Warp env with the same auto-reset behaviour.
+
 
 ## 5. Our own MAPPO in `jax_ppo`
 

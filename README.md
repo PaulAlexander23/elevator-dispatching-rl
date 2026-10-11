@@ -330,6 +330,20 @@ kernels compile with `fuse_fp` off, for the same rounding reason as the JAX
 and C++ ports; the first build of each configuration takes about a minute
 (Warp caches it in `~/.cache/warp`).
 
+## Multi-agent view
+
+`elevator_rl.marl_env` presents the JAX and Warp envs as multi-agent envs,
+one agent per lift, in the layout Mava uses (Jumanji's functional API with an
+agents axis): each lift's block of the `relative` observation as its view,
+the whole observation as the global state for a centralised critic, an action
+mask, and the team reward repeated per lift. `MultiAgentEnv` wraps one JAX env
+and works under `jit` and `vmap`; `make_vec_env` batches either env with
+auto-reset. It doesn't depend on Mava or Jumanji.
+
+```sh
+uv run pytest tests/test_marl_env.py
+```
+
 ## Hyperparameter testing
 
 `elevator_rl.tune` runs one JAX PPO training configured with
