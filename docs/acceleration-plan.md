@@ -542,7 +542,7 @@ Gate 2 answered no: after Phase 2 the env took 1% of training time, so EnvPool c
 - [x] Phase 1: C++ env steps/s (single thread, no Python) and parity test suite green
 - [x] Phase 2: batched VecEnv steps/s at N = 1, 16, 256; PPO steps/s with it
 - [x] Phase 3: EnvPool sync vs async at 1–16 threads; PPO steps/s vs Phase 2
-- [ ] Every phase: `benchmark.py` reward table within noise of the Python env across 3 seeds
+- [x] Every phase: `benchmark.py` reward table within noise of the Python env across 3 seeds (`scripts/reward_parity.py`, see the backlog)
 
 ### Learning quality: at equal time, the fast settings win
 
@@ -629,7 +629,7 @@ These were recommended along the way and deferred, so Phases 3 and 4 could go ah
 - [x] **Longer training runs on `full`,** deferred until the speed-ups land. Target: beat the heuristic's 69 (the recipe reaches 66.8 ± 1.3 after 500k steps). Done: 77.0 ± 2.4 after 50M steps (9.5 minutes of training, 3 seeds), 8 above the heuristic, and still rising.
 - [x] **Learner defaults in `train.py`:** set torch threads to the physical core count (8 here, against 1 now), and suggest `--device cuda` when minibatch ≥ 512. Done: PyTorch already defaults to one thread per physical core (8 here); only the benchmarks pin 1. `train.py` now prints the thread count, takes `--torch-threads`, and hints at `--device cuda` for minibatches of 512 or more when a GPU is available.
 - [x] **Replace SB3's per-step overhead.** With a GPU learner, the policy forward pass and SB3 bookkeeping take 28–68% of the time. Done in Phase 4: the JAX PPO removes it (7× at the recipe's settings).
-- [ ] **Reward parity per phase:** run the `benchmark.py` reward table across 3 seeds for each env backend (Python, C++, EnvPool, JAX), as the milestone list asks.
+- [x] **Reward parity per phase:** run the `benchmark.py` reward table across 3 seeds for each env backend (Python, C++, EnvPool, JAX), as the milestone list asks. Done with `scripts/reward_parity.py` (SB3 PPO on each VecEnv, `original`, relative obs, 300k steps, 3 seeds): Python 131.3 ± 7.5, C++ 134.2 ± 4.4, ctypes 134.2 ± 4.4 (same seeds, same C++ core, identical), EnvPool 133.5 ± 2.9; the JAX PPO gives 129.4 ± 8.7 on the JAX env and 133.9 ± 1.5 on Warp. All within noise.
 - [x] **DLL route (open question in the comments):** a flat `extern "C"` API loaded with `ctypes`, as a comparison with the nanobind module. Done on branch ctypes-dll: see its result section under Phase 2.
 - [ ] **Packaging:** build the C++ module with scikit-build-core so `uv sync` compiles it, keeping the pure-Python fallback.
 - [x] **`SubprocVecEnv` memory:** 256 subprocesses ran this 31 GB machine out of memory, because each process loads torch. Either cap it in the sweep or document the limit. Done: each worker holds about 240 MB, so `make_vec_env` refuses more workers than three quarters of physical memory fits (about 95 here), pointing to the cpp or envpool VecEnvs; the sweep skips such configs.
