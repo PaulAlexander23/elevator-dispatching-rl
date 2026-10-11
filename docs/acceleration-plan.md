@@ -1,6 +1,6 @@
 # Elevator Env Acceleration Plan
 
-Last updated 2026-10-10. The live version of this plan is a Claude Docs doc; this is the repo's copy, with each chart turned into a table of its data.
+Last updated 2026-10-11. **Status: complete.** Every phase and backlog item is done and merged; the open follow-ups (packaging, two speed-ups, MAPPO and a 200M-step run) moved to the [follow-up plan](follow-up-plan.md). The live version of this plan is a Claude Docs doc; this is the repo's copy, with each chart turned into a table of its data.
 
 ## Summary
 
@@ -28,11 +28,11 @@ Every phase is built:
 4. **EnvPool (phase 3):** 1.9–2.9× the C++ env's throughput with 16 threads, but no gain in SB3 training, as gate 2 predicted.
 5. **JAX (phase 4):** 2.6–7× SB3's speed on the same GPU. The Warp env then added 1.5×, reaching 363k PPO steps/s.
 
-Success still means a faster training loop with no loss in policy quality. Policy quality at the fastest settings is not yet checked; it is first in the backlog.
+Success still means a faster training loop with no loss in policy quality. Policy quality held up: at the fast settings, tuned PPO reaches 77.0 ± 2.4 passengers per episode after 50M steps (9.5 minutes), 8 above the heuristic's 69. See "Longer runs" below.
 
 ## Current state
 
-The repo now has five implementations of the env, each checked against the Python one, and two of PPO. All of it is on the `heavier-env` branch.
+The repo now has five implementations of the env, each checked against the Python one, and two of PPO. All of it is merged into `main`. The JAX PPO also has the imitation warm start (`jax_imitate`), and `elevator_rl.tune` runs it from one Hydra config tree, with Optuna searches (`tune_search`) and a report (`tune_report`).
 
 | Component | Where | Role | Speed on `full` |
 | --- | --- | --- | --- |
@@ -44,7 +44,7 @@ The repo now has five implementations of the env, each checked against the Pytho
 | SB3 PPO | `train.py`, `compare.py`, `sweep.py` | Training on any env backend, on the CPU or the GPU | up to 50k PPO steps/s |
 | JAX PPO | `jax_ppo.py` | PPO matching SB3's, compiled into one program with the env | up to 363k PPO steps/s (on the Warp env) |
 
-The tests (149, plus slow ones) check every port against Python, and CI builds the C++ and runs the JAX tests. The optional parts are dependency groups: CUDA torch (`cuda`) and JAX (`jax`, `jax-cuda`). EnvPool is a local wheel and needs Python 3.12 or later, which the project now uses.
+The tests (235, plus 2 slow ones) check every port against Python, and CI builds the C++ and runs the JAX tests. The optional parts are dependency groups: CUDA torch (`cuda`) and JAX (`jax`, `jax-cuda`). EnvPool is a local wheel and needs Python 3.12 or later, which the project now uses.
 
 ## Phase 0: heavier environment
 
@@ -535,7 +535,7 @@ Gate 2: env over 10% of PPO time? No: 1%.
 Gate 3: need 10× more? JAX: 2.6–7× over SB3.
 ```
 
-Gate 2 answered no: after Phase 2 the env took 1% of training time, so EnvPool could not speed up SB3 training. It was built anyway as a learning exercise, and it confirmed that. Gate 3 led to JAX and then Warp, which gave the gains the env work could not. The one open milestone, reward parity for each backend across 3 seeds, is in the backlog.
+Gate 2 answered no: after Phase 2 the env took 1% of training time, so EnvPool could not speed up SB3 training. It was built anyway as a learning exercise, and it confirmed that. Gate 3 led to JAX and then Warp, which gave the gains the env work could not. The last milestone, reward parity for each backend across 3 seeds, is done: every backend is within noise of Python.
 
 - [x] Record the baseline: `scripts/time_env.py`, `scripts/time_ppo.py`, plus a `py-spy` profile of one PPO run
 - [x] Quick win before any C++: rerun `time_ppo.py` with `n_envs` = 8, 16 and 32 (`SubprocVecEnv` and `DummyVecEnv`)
@@ -543,6 +543,28 @@ Gate 2 answered no: after Phase 2 the env took 1% of training time, so EnvPool c
 - [x] Phase 2: batched VecEnv steps/s at N = 1, 16, 256; PPO steps/s with it
 - [x] Phase 3: EnvPool sync vs async at 1–16 threads; PPO steps/s vs Phase 2
 - [x] Every phase: `benchmark.py` reward table within noise of the Python env across 3 seeds (`scripts/reward_parity.py`, see the backlog)
+
+## Overnight backlog run (10–11 Oct)
+
+PPO now beats the collective heuristic on `full` by 8: 77.0 ± 2.4 passengers per episode after 50M steps and 9.5 minutes of training (heuristic 69). That takes the imitation warm start ported to JAX, 1,024 envs × 8 steps on the Warp env, and tuned settings (10 epochs, lr 5.2e-5). Every backlog item but packaging got a PR, one per item; stacked PRs say so in their description.
+
+| Backlog item | PR | Result |
+| --- | --- | --- |
+| Hyperparameter testing (tooling) | [#9](https://github.com/PaulAlexander23/elevator-dispatching-rl/pull/9) | Hydra config + multirun, Optuna search with pruning, a sweep report |
+| Port the imitation warm start to JAX | [#10](https://github.com/PaulAlexander23/elevator-dispatching-rl/pull/10) (on #9) | Clone starts at 54.3; recipe then reaches 68.6 ± 1.1 in 5M steps |
+| Learning quality at the fast settings (+ in JAX) | [#13](https://github.com/PaulAlexander23/elevator-dispatching-rl/pull/13) (on #10) | At equal time 1,024 × 8 : 2,048 wins, 71.5 ± 1.8 |
+| Hyperparameter results, tune for large minibatches, longer runs | [#17](https://github.com/PaulAlexander23/elevator-dispatching-rl/pull/17) (on #13) | Tuned: 77.0 ± 2.4 after 50M steps (9.5 min), against 70.3 untuned |
+| Profile the JAX PPO | [#14](https://github.com/PaulAlexander23/elevator-dispatching-rl/pull/14) | Epochs take 54–80% of an update, at two-thirds of the GPU's FP32 peak |
+| Target actions + `custom` obs in JAX | [#6](https://github.com/PaulAlexander23/elevator-dispatching-rl/pull/6) | Exact parity with Python on every preset |
+| Target actions + `custom` obs in Warp | [#8](https://github.com/PaulAlexander23/elevator-dispatching-rl/pull/8) (on #6) | Exact parity; found a Warp miscompile |
+| Warp tests in CI | [#7](https://github.com/PaulAlexander23/elevator-dispatching-rl/pull/7) | CPU backend, 2 minutes cold; passing in CI |
+| Reward parity per backend | [#12](https://github.com/PaulAlexander23/elevator-dispatching-rl/pull/12) | Python, C++, ctypes, EnvPool, JAX, Warp all within noise |
+| Learner defaults in `train.py` | [#5](https://github.com/PaulAlexander23/elevator-dispatching-rl/pull/5) | `--torch-threads`, GPU hint (torch already used 8 threads) |
+| `SubprocVecEnv` memory | [#11](https://github.com/PaulAlexander23/elevator-dispatching-rl/pull/11) | About 240 MB per worker; capped at 3/4 of RAM |
+| Profile the JAX env; EnvPool's XLA interface | [#16](https://github.com/PaulAlexander23/elevator-dispatching-rl/pull/16), [#15](https://github.com/PaulAlexander23/elevator-dispatching-rl/pull/15) | JAX env: arrivals take 55–59% of a step. EnvPool in jit works on the GPU but deadlocks intermittently |
+| Packaging with scikit-build-core | — | Skipped, as agreed: it could break the EnvPool wheel. Moved to the [follow-up plan](follow-up-plan.md) |
+
+All were merged into `main` by 11 Oct. #8 merged into its stale base branch, so it was re-opened as [#18](https://github.com/PaulAlexander23/elevator-dispatching-rl/pull/18).
 
 ### Learning quality: at equal time, the fast settings win
 
@@ -603,22 +625,20 @@ _Source: `scripts/hyperparameter_runs.sh`, then `python -m elevator_rl.tune_repo
 - **More epochs win back what big batches lose per sample.** 1 epoch reaches less after 20M steps (71.5 vs 73.9) but runs 3.7× faster.
 - **At the recipe's settings the entropy coefficient matters most** (importance 0.70), and the gains are within seed noise.
 
-### Longer runs: tuned PPO beats the heuristic by 8
+### Ports: everything the SB3 recipe uses now runs in JAX and Warp
 
-With the fast search's best settings, PPO reaches 77.0 ± 2.4 passengers per episode after 50M steps (seeds: 77.4, 74.4, 79.2), in 9.5 minutes of training; the heuristic delivers 69. Untuned, the same setting levels off at 70.3 ± 0.5 (3.7 minutes).
+The imitation warm start, target actions and the `custom` observation now run on the GPU envs, all with exact step-for-step parity with Python (float64, every preset).
 
-Network size with the tuned settings, 20M steps (mean eval between 17M and 20M, 3 seeds):
+- **Warm start in JAX (`jax_imitate`).** The heuristic still runs on the Python env (once, cached on disk); the cloning is a jitted optax loop over the JAX PPO's own networks. The clone starts at 54.3 passengers (SB3's: 57.5).
+- **Target actions and `custom` in JAX.** Each lift keeps a goal in `EnvState`, turned into a primitive action each step. The JAX PPO one-hot encodes `custom`, matching SB3's `preprocess_obs` exactly. Target actions with `custom` reach 120 on `original` in 200k steps (heuristic 136).
+- **The same in Warp.** Each lift computes its primitive inline, which is safe because it reads only its own state.
+- **Warp in CI.** On Warp's CPU backend, kernels compile with LLVM in seconds instead of NVRTC's minute, so the 13 Warp tests take 2 minutes cold. CI installs PyPI's `warp-lang` over CPU JAX.
 
-| Hidden layers | Reward at 20M steps | PPO steps/s | Minutes to 20M |
-| --- | --: | --: | --: |
-| 64 × 64 | 66.8 ± 1.3 | 174,400 | 1.9 |
-| 128 × 128 | 70.2 ± 0.8 | 140,416 | 2.4 |
-| 256 × 256 | 73.6 ± 2.0 | 87,700 | 3.8 |
-| 512 × 512 | 74.8 ± 0.3 | 44,899 | 7.4 |
+What we learned:
 
-- **The tuned settings keep improving where the untuned ones stop:** untuned plateaus by 20M steps; tuned still climbs at 50M.
-- **256 × 256 is the best default.** 64 × 64 loses 7 passengers; 512 × 512 gains 1 at half the speed, and in its 7.4 minutes 256 × 256 is already at 75–77.
-- **Seed spread is wide at the top** (74.4 to 79.2), so single-seed differences of a point or two, as in the searches, are within noise.
+- **A Warp miscompile.** A closure constant (`CAP`) read inside one `wp.static` branch of a `wp.func` compiled to an uninitialised `float64` register: the generated C++ declared `wp::float64 var_57;` and never set it. Symptoms: counts left uncapped, then `INT_MIN`. Folding it in with `wp.static(float(CAP))` fixed it. Reading the generated code in `~/.cache/warp` found it in minutes.
+- **Warp's variables are function-wide.** `down` as a float in one static branch clashed with `down` as an int in another, though only one branch is ever compiled.
+- **The parity tests caught it.** Only the long replay did: the first episode never had more than 8 people waiting at a floor, so the wrong cap first showed at step 70 of the second.
 
 ### Profiling the JAX PPO: the epochs are compute-bound
 
@@ -661,18 +681,38 @@ _Source: `scripts/profile_jax_env.py --n-envs 1024 16384`; each part vmapped, co
 - **On the CPU the share is larger still** (83% at 64 envs), which fits random-number generation, not the queue writes, being the cost.
 - A cheaper arrival model (one Poisson draw per step, scattered to floors) is the obvious next speed-up for the JAX env. The Warp env makes it moot for training.
 
+### EnvPool's XLA interface: works, but deadlocks
+
+Our trimmed EnvPool wheel supports `pool.xla()`, so a jitted `lax.scan` can step the C++ env: on the GPU at 384k env steps/s with 64 envs and 696k with 256, 72–75% of EnvPool's own Python API and 3–4× the JAX and Warp envs at such small batches. But it deadlocked intermittently: on CPU JAX past a few dozen steps at every size, and once on the GPU at 1,024 envs. It also auto-resets a step late, so a learner would need to mask that step. Kept as an experiment ([#15](https://github.com/PaulAlexander23/elevator-dispatching-rl/pull/15)); Warp remains the route.
+
+### Longer runs: tuned PPO beats the heuristic by 8
+
+With the fast search's best settings, PPO reaches 77.0 ± 2.4 passengers per episode after 50M steps (seeds: 77.4, 74.4, 79.2), in 9.5 minutes of training; the heuristic delivers 69. Untuned, the same setting levels off at 70.3 ± 0.5 (3.7 minutes).
+
+Network size with the tuned settings, 20M steps (mean eval between 17M and 20M, 3 seeds):
+
+| Hidden layers | Reward at 20M steps | PPO steps/s | Minutes to 20M |
+| --- | --: | --: | --: |
+| 64 × 64 | 66.8 ± 1.3 | 174,400 | 1.9 |
+| 128 × 128 | 70.2 ± 0.8 | 140,416 | 2.4 |
+| 256 × 256 | 73.6 ± 2.0 | 87,700 | 3.8 |
+| 512 × 512 | 74.8 ± 0.3 | 44,899 | 7.4 |
+
+- **The tuned settings keep improving where the untuned ones stop:** untuned plateaus by 20M steps; tuned still climbs at 50M.
+- **256 × 256 is the best default.** 64 × 64 loses 7 passengers; 512 × 512 gains 1 at half the speed, and in its 7.4 minutes 256 × 256 is already at 75–77.
+- **Seed spread is wide at the top** (74.4 to 79.2), so single-seed differences of a point or two, as in the searches, are within noise.
+
 ## Backlog: to come back to
 
 These were recommended along the way and deferred, so Phases 3 and 4 could go ahead first. Logged 2026-10-10.
 
-- [x] **Check learning quality at the fast settings.** On `full`, compare the recipe (minibatch 64, 64 envs × 32 steps) against minibatch 512 and 2048, and 64 vs 1024 envs, on the GPU. Plot reward against wall-clock minutes. Large minibatches learned worse per sample on `original`, so the 17× throughput may cost reward. Done in JAX (see "Learning quality: at equal time, the fast settings win" below): per sample, larger minibatches learn worse (5M steps: 68.6 recipe, 63.5 at 1,024 × 8 : 2,048, 57.2 at 16,384 envs), but at equal time 1,024 × 8 : 2,048 learns best, 71.5 ± 1.8 in 2.9 minutes, above the heuristic's 69.
+- [x] **Check learning quality at the fast settings.** On `full`, compare the recipe (minibatch 64, 64 envs × 32 steps) against minibatch 512 and 2048, and 64 vs 1024 envs, on the GPU. Plot reward against wall-clock minutes. Large minibatches learned worse per sample on `original`, so the 17× throughput may cost reward. Done in JAX (see "Learning quality: at equal time, the fast settings win" above): per sample, larger minibatches learn worse (5M steps: 68.6 recipe, 63.5 at 1,024 × 8 : 2,048, 57.2 at 16,384 envs), but at equal time 1,024 × 8 : 2,048 learns best, 71.5 ± 1.8 in 2.9 minutes, above the heuristic's 69.
 - [x] **Tune PPO for large minibatches** if that check shows a gap: a higher learning rate, more gradient epochs per rollout, or a learning-rate schedule. Done: at 1,024 × 8 : 2,048, 10 epochs, lr 5.2e-5, clip 0.1 and value coefficient 0.25 reach 77.0 ± 2.4 after 50M steps, against 70.3 ± 0.5 untuned. More epochs helped; a higher learning rate did not (2–6e-5 is best).
 - [x] **Longer training runs on `full`,** deferred until the speed-ups land. Target: beat the heuristic's 69 (the recipe reaches 66.8 ± 1.3 after 500k steps). Done: 77.0 ± 2.4 after 50M steps (9.5 minutes of training, 3 seeds), 8 above the heuristic, and still rising.
 - [x] **Learner defaults in `train.py`:** set torch threads to the physical core count (8 here, against 1 now), and suggest `--device cuda` when minibatch ≥ 512. Done: PyTorch already defaults to one thread per physical core (8 here); only the benchmarks pin 1. `train.py` now prints the thread count, takes `--torch-threads`, and hints at `--device cuda` for minibatches of 512 or more when a GPU is available.
 - [x] **Replace SB3's per-step overhead.** With a GPU learner, the policy forward pass and SB3 bookkeeping take 28–68% of the time. Done in Phase 4: the JAX PPO removes it (7× at the recipe's settings).
 - [x] **Reward parity per phase:** run the `benchmark.py` reward table across 3 seeds for each env backend (Python, C++, EnvPool, JAX), as the milestone list asks. Done with `scripts/reward_parity.py` (SB3 PPO on each VecEnv, `original`, relative obs, 300k steps, 3 seeds): Python 131.3 ± 7.5, C++ 134.2 ± 4.4, ctypes 134.2 ± 4.4 (same seeds, same C++ core, identical), EnvPool 133.5 ± 2.9; the JAX PPO gives 129.4 ± 8.7 on the JAX env and 133.9 ± 1.5 on Warp. All within noise.
 - [x] **DLL route (open question in the comments):** a flat `extern "C"` API loaded with `ctypes`, as a comparison with the nanobind module. Done on branch ctypes-dll: see its result section under Phase 2.
-- [ ] **Packaging:** build the C++ module with scikit-build-core so `uv sync` compiles it, keeping the pure-Python fallback.
 - [x] **`SubprocVecEnv` memory:** 256 subprocesses ran this 31 GB machine out of memory, because each process loads torch. Either cap it in the sweep or document the limit. Done: each worker holds about 240 MB, so `make_vec_env` refuses more workers than three quarters of physical memory fits (about 95 here), pointing to the cpp or envpool VecEnvs; the sweep skips such configs.
 - [x] **NVIDIA Warp,** the other half of Phase 4. Done: see its result section.
 - [x] **Merged as PR #2** for `heavier-env`.
@@ -690,4 +730,6 @@ Added after Warp:
 - [x] **Profile the JAX PPO's policy and update.** With the Warp env, stepping is only about a tenth of training time, so the learner is the bottleneck again. Done (`scripts/profile_jax_ppo.py`): the PPO epochs take 54–80% of each update. At 16,384 envs they run about 6 TFLOPS, two-thirds of the GTX 1080's FP32 peak, so the learner is close to compute-bound; the 256×256 MLP's first layer (1,220 inputs) holds 80% of the weights.
 - [x] **Port the target action mode and the `custom` observation to Warp,** alongside the JAX port. Done: exact parity with Python on every preset. Two Warp pitfalls on the way: a closure constant (`CAP`) read in one static branch of a `wp.func` compiled to an uninitialised register (fixed with `wp.static(...)`), and Warp's variables are function-wide, so two branches can't use one name with different types.
 - [x] **Run the Warp tests in CI** on Warp's CPU backend, if the compile time (about a minute per config) is acceptable there. Done: on the CPU backend the kernels compile in seconds (LLVM, not NVRTC), and the 13 Warp tests take about 2 minutes from a cold cache. CI installs PyPI's `warp-lang` over the CPU JAX group and caches `~/.cache/warp`.
-- [x] **Hyperparameter testing.** Done: tooling in `elevator_rl.tune` (Hydra), `tune_search` (Optuna) and `tune_report`; results in "Hyperparameter search" and "Longer runs" below. Sweep PPO's learning rate, epochs, minibatch size, entropy coefficient, clip range and network size, and compare reward across seeds. Adding Hydra may make this easier: one config tree for the env preset, backend and PPO settings, with multirun sweeps (and an Optuna sweeper) instead of the separate argparse CLIs in `train.py`, `jax_ppo.py` and `sweep.py`.
+- [x] **Hyperparameter testing.** Done: tooling in `elevator_rl.tune` (Hydra), `tune_search` (Optuna) and `tune_report`; results in "Hyperparameter search" and "Longer runs" above. Sweep PPO's learning rate, epochs, minibatch size, entropy coefficient, clip range and network size, and compare reward across seeds. Adding Hydra may make this easier: one config tree for the env preset, backend and PPO settings, with multirun sweeps (and an Optuna sweeper) instead of the separate argparse CLIs in `train.py`, `jax_ppo.py` and `sweep.py`.
+
+The ticked items were merged in PRs #5–#18 (see "Overnight backlog run" above). Packaging, and the follow-ups found along the way, are in the [follow-up plan](follow-up-plan.md).

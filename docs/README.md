@@ -6,10 +6,13 @@ NVIDIA Warp, each port checked step for step against Python. On the heaviest
 preset, PPO training now runs 209× faster than at the start: 362,635 PPO
 steps/s against 1,739, on a GTX 1080.
 
-- [Acceleration plan](acceleration-plan.md): the plan, each phase's results,
-  the pitfalls, the benchmark gates and the backlog of what to do next. It
-  is a copy of the live plan doc as of 2026-10-10, with each chart turned
-  into a table of its data.
+- [Acceleration plan](acceleration-plan.md) (complete): the plan, each
+  phase's results, the overnight backlog run, the pitfalls and the benchmark
+  gates. It is a copy of the live plan doc as of 2026-10-11, with each chart
+  turned into a table of its data.
+- [Follow-up plan](follow-up-plan.md): what comes next, in order: packaging
+  with scikit-build-core, cheaper JAX arrivals, a smaller observation, a
+  multi-agent env interface, MAPPO (our own and Mava's) and a 200M-step run.
 - [Setup notes](setup-notes.md): what it took to run every backend on the
   development machine, covering Python 3.12, the dependency groups, CUDA 12
   builds for a Pascal GPU, `LD_LIBRARY_PATH`, fused multiply-adds and
