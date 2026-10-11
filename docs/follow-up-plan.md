@@ -206,6 +206,8 @@ PettingZoo is not the core: it is stateful, steps one env at a time with dicts k
 - **Transfer.** `transfer(params, env, config, key)` moves the actor to another lift count: the shared layers carry over, lift ids beyond the trained count get a zero weight, and the critic is fresh (it depends on the lift count). `scripts/mappo_transfer.py` trains with 4 lifts, then evaluates on 2, 3, 6 and 8 against the heuristic, and with `--finetune N` compares fine-tuning with a warm start from scratch in each building.
 - **Tuned settings as a config.** `conf/tuned.yaml` holds the tuned PPO (warm start, 1,024 × 8 : 2,048, 10 epochs, lr 5.21e-5, clip 0.1, entropy 2.77e-5, value 0.25, Warp), so the comparisons are `python -m elevator_rl.tune -m --config-name tuned seed=0,1,2 ppo.algo=ppo,mappo timesteps=20_000_000`.
 - **Fixed on the way.** `jax_ppo.train` donated the caller's `params` to the first update, so reusing them after training failed ("Array has been deleted"). It now copies them first.
+- **Speed (CPU, `profile_jax_ppo.py --algo mappo`, 1,024 × 8 : 2,048, 10 epochs).** 3,298 PPO steps/s with 256 × 256, against PPO's 11,920: 3.6× slower, as the actor runs once per lift. 6,119 with 128 × 128. The equal-time comparison will matter.
+- **The GPU runs.** `scripts/follow_up_runs.sh` queues the GPU work for items 2, 3 and 5 in stages (`profile`, `arrivals`, `encoder`, `mappo`, `transfer`), one job at a time, into `runs/follow-up/`.
 - **Tests.** Per-lift log-probabilities against a lift-by-lift reference, with and without lift ids; training and warm-starting MAPPO; transfer to 2 and 6 lifts, with evaluation there. Full suite: 255 passed.
 
 ## 6. 200M-step run

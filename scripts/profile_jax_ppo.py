@@ -7,7 +7,7 @@ Each part is compiled on its own and timed per rollout of n_envs x n_steps:
 - update: one whole `make_train` update (rollout, GAE and the PPO epochs).
 The PPO epochs and GAE take update - rollout. Preset full, relative obs,
 256x256 MLPs unless `--net-arch`, 3 epochs unless `--n-epochs`; `--lift-encoder 128` adds the
-shared per-lift first layer.
+shared per-lift first layer, and `--algo mappo` the shared per-lift actor.
 
     uv run --group warp python scripts/profile_jax_ppo.py --backends jax warp
     uv run --group warp python scripts/profile_jax_ppo.py --trace /tmp/trace
@@ -56,6 +56,7 @@ def profile(
     n_epochs=3,
     lift_encoder=0,
     net_arch=(256, 256),
+    algo="ppo",
 ):
     env = make_env(backend)
     config = PPOConfig(
@@ -65,6 +66,7 @@ def profile(
         n_epochs=n_epochs,
         net_arch=net_arch,
         lift_encoder=lift_encoder,
+        algo=algo,
     )
     init, update = make_train(env, config)
     runner = init(jax.random.key(0))
@@ -131,6 +133,7 @@ def main():
     parser.add_argument("--n-epochs", type=int, default=3)
     parser.add_argument("--lift-encoder", type=int, default=0)
     parser.add_argument("--net-arch", type=int, nargs="+", default=[256, 256])
+    parser.add_argument("--algo", choices=("ppo", "mappo"), default="ppo")
     parser.add_argument(
         "--settings", nargs="+", help="envs x steps : minibatch, as 1024x8:2048 (default: all)"
     )
@@ -156,6 +159,7 @@ def main():
                 args.n_epochs,
                 args.lift_encoder,
                 tuple(args.net_arch),
+                args.algo,
             )
             total = t["update"]
             epochs = total - t["rollout"]
