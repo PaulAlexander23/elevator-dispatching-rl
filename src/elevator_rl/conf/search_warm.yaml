@@ -1,0 +1,11 @@
+# The Optuna search space after an imitation warm start (elevator_rl.tune_search
+# --space ...). Fine-tuning needs a low learning rate: at 3e-4 PPO forgets
+# the imitated policy (docs/acceleration-plan.md, Phase 0), so the range is lower.
+ppo.learning_rate: {low: 3.0e-6, high: 3.0e-4, log: true}
+ppo.n_epochs: {choices: [1, 3, 5, 10]}
+ppo.batch_size: {choices: [64, 256, 512, 2048]}  # must divide n_envs x n_steps
+ppo.ent_coef: {low: 1.0e-5, high: 0.01, log: true}
+ppo.clip_range: {choices: [0.05, 0.1, 0.2, 0.3]}
+ppo.gae_lambda: {choices: [0.9, 0.95, 0.98]}
+ppo.gamma: {choices: [0.98, 0.99, 0.995]}
+ppo.vf_coef: {choices: [0.25, 0.5, 1.0]}

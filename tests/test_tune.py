@@ -82,3 +82,10 @@ def test_search_writes_results(tmp_path):
     results = tune_report.load([tmp_path / "t"])
     assert len(results) == 2
     assert any(o.startswith("ppo.net_arch=[") for o in results[0]["overrides"])
+
+
+def test_report_importance(tmp_path, capsys):
+    tune_search.main(["--trials", "3", "--name", "imp", "--out", str(tmp_path), *TINY])
+    tune_report.main([str(tmp_path / "imp"), "--importance"])
+    out = capsys.readouterr().out
+    assert "| Hyperparameter | Importance |" in out
