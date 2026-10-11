@@ -85,14 +85,14 @@ That is about 2K = 64 uniforms per env per step instead of 14,400 Gumbel draws. 
 - [x] Measure the largest arrival rate on `full` (morning peak) and the chance N exceeds K; choose K so it is negligible, and count overflows in `dropped`.
 - [x] Keep exact parity: the parity tests inject Python's arrivals, so they don't depend on the draw. Run them unchanged.
 - [x] Add or extend a statistical test: per-floor count means and the destination histogram against the Python env's, over many steps.
-- [ ] (CPU done; GPU waits for a reboot) Re-run `scripts/profile_jax_env.py` and `scripts/time_jax_env.py`: arrivals' share, env steps/s at 1,024 and 16,384 envs.
-- [ ] (waits for the GPU) One reward-parity run on the JAX env (`scripts/reward_parity.py`, 3 seeds) to confirm learning is unchanged.
+- [x] Re-run `scripts/profile_jax_env.py` and `scripts/time_jax_env.py`: arrivals' share, env steps/s at 1,024 and 16,384 envs.
+- [ ] (queued: `follow_up_runs.sh arrivals`) One reward-parity run on the JAX env (`scripts/reward_parity.py`, 3 seeds) to confirm learning is unchanged.
 
 **Note.** The Warp env already draws only the arrivals that happen, so this speeds up the JAX env, not the Warp training path.
 
-### Result: done on the CPU; GPU numbers to follow
+### Result: done; the GPU gain is smaller than planned
 
-`JaxBuildingEnv.draw_arrivals` now draws a Poisson total and places each arrival by inverse CDF, as planned. Details:
+`JaxBuildingEnv.draw_arrivals` now draws a Poisson total and places each arrival by inverse CDF, as planned, and the total too is drawn by inverse CDF from a uniform (see the GPU findings). Details:
 
 - **Slots.** The expected total is `arrival_probability × n_floors` whatever the traffic mix (each pattern's origins sum to one, as do the mix weights), so it is 3.0 a step on `full` at every point of the day. `arrival_slots(config)` takes the mean plus 10 standard deviations plus 10, rounded up to a multiple of 8: 32 on `full`. Poisson(3) exceeds 32 about once in 1e23 steps; any excess goes in a new `Arrivals.overflow` field and is counted in `dropped`.
 - **Layout.** The slots are laid out in the old per-floor `Arrivals` form (floors × 16, in slot order), so `add_arrivals`, its caps and the parity tests' injected arrivals are unchanged. A slot's place in its floor's row is the number of earlier slots from the same floor, a 32 × 32 comparison.
@@ -108,8 +108,21 @@ CPU profile (`scripts/profile_jax_env.py --n-envs 1024`, `full`, `relative`; the
 
 Arrivals are 28× cheaper and the step 4.3× faster on the CPU; the goal (under 15%) is met there. On the CPU the actions and substeps are now 79% of the step.
 
-**Still to do once the GPU is back.** On 2026-10-11 the NVIDIA driver's user-space library (580.178) was newer than the loaded kernel module (580.173), so JAX fell back to the CPU until a reboot. Still to run: the GPU profile at 1,024 and 16,384 envs (`profile_jax_env.py`, `time_jax_env.py`) and the reward-parity run.
+**On the GPU the gain is smaller.** Timed as 100 fused vec-env steps (`make_vec_env`, `lax.scan`, buffers donated), the old and new files side by side:
 
+| Version | 1,024 envs, ms per step | 16,384 envs, ms per step |
+| --- | --: | --: |
+| Before (Gumbel-max per floor and slot, `jax.random.poisson` per floor) | 1.88 | 24.3 |
+| Poisson total + inverse CDF, `jax.random.poisson` for the total | 1.58 | 20.5 |
+| The same, total by inverse CDF too (kept) | 1.26 | 20.0 |
+| No arrivals at all (compiled away) | 0.84 | 11.4 |
+
+The step is 33% faster at 1,024 envs and 18% at 16,384. Arrivals still cost 0.42 of 1.26 ms (33%) and 8.6 of 20.0 ms (43%), so the goal of under 15% is met on the CPU only. What was learned:
+
+- **`profile_jax_env.py` overstated arrivals' share on the GPU** (55–59% before, 45–47% after): it times each part as its own jitted function, which also copies every env's 15 KB of queues in and out. Within the fused step arrivals cost 55% before (1.04 of 1.88 ms) and 33% now. Compare whole steps, as above, to judge a change.
+- **`jax.random.poisson` is a rejection loop**, a `while_loop` whose every iteration is a kernel launch on the GPU. Drawing the total by inverse CDF over P(N ≤ 0..32) (one uniform, no loop) saved 0.3 ms at 1,024 envs. In float32 the cumulative sum reaches 1 once the tail is under 6e-8, so totals beyond 16 on `full` (about once in 2e7 steps) come out as about 16.
+- **At 16,384 envs queueing dominates**: 8.6 ms, against about 0.5 ms before. Writing the 32 slots straight into the queues (one scatter of 32 writes, not two over 30 × 16) cut the step to 1.37 ms at 1,024 envs but raised it to 34 ms at 16,384; building the per-floor layout with a one-hot product instead of a scatter gave 1.54 and 28.5 ms. Both were dropped. Why queueing got dearer (the old destinations came straight from an elementwise argmax, the new ones from a scatter) is open; a `jax.profiler` trace would tell.
+- Training uses the Warp env, which already draws only the arrivals that happen, so none of this changes the PPO numbers.
 ## 3. Smaller observation or a shared per-lift encoder
 
 **Goal.** Make the compute-bound PPO epochs cheaper without losing reward. The `relative` observation has 1,220 inputs and the first layers hold 82% of the weights. Shrinking the hidden layers is not the answer: 64 × 64 networks lost 7 passengers.

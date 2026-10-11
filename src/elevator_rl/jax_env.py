@@ -126,6 +126,14 @@ def _inverse_cdf(weights, u):
     return jnp.minimum(index, last)
 
 
+def _slot_rank(origin, used):
+    """Each slot's place in its floor's queue order: the number of earlier
+    used slots from the same floor."""
+    slot = jnp.arange(origin.shape[0])
+    earlier = (origin[:, None] == origin[None, :]) & used[None, :] & (slot[None, :] < slot[:, None])
+    return earlier.sum(axis=1)
+
+
 def _rounded(product):
     """A product rounded before it is added to anything.
 
@@ -285,30 +293,48 @@ class JaxBuildingEnv:
             dest = dest + (dest >= floors)
             destination = jnp.zeros((n, MAX_ARRIVALS), jnp.int32).at[:, 0].set(dest)
             return Arrivals(destination, count)
-        # Poisson splitting: independent Poisson counts per floor are one
-        # Poisson total with each arrival's origin drawn in proportion to the
-        # rates. So draw the total, then an origin and a destination for each
-        # of `arrival_slots` slots by inverse CDF: 2 uniforms per slot, not a
-        # Gumbel draw per floor for every slot of every floor.
-        rates, joint = self.arrival_model(episode_fraction)
-        total = jax.random.poisson(k_count, rates.sum()).astype(jnp.int32)
-        u_origin, u_dest = jax.random.uniform(k_dest, (2, self.arrival_slots), dtype=rates.dtype)
-        origin = _inverse_cdf(rates, u_origin)
-        dest = _inverse_cdf(joint[origin], u_dest)
-        # Lay the slots out per floor, in slot order: a slot's place in its
-        # floor's row is the number of earlier slots from the same floor.
-        slot = jnp.arange(self.arrival_slots)
-        used = slot < total
-        same = (origin[:, None] == origin[None, :]) & used[None, :]
-        rank = (same & (slot[None, :] < slot[:, None])).sum(axis=1)
+        origin, dest, used, overflow = self._draw_slots(key, episode_fraction)
+        # Lay the slots out per floor, in slot order, for add_arrivals. (Writing
+        # each slot straight into its queue, or laying them out with a one-hot
+        # product instead of a scatter, made the GPU step slower at 16,384 envs.)
         count = (jax.nn.one_hot(origin, n, dtype=jnp.int32) * used[:, None]).sum(axis=0)
         destination = (
             jnp.zeros((n, MAX_ARRIVALS), jnp.int32)
-            .at[jnp.where(used, origin, n), rank]
-            .set(dest.astype(jnp.int32), mode="drop")
+            .at[jnp.where(used, origin, n), _slot_rank(origin, used)]
+            .set(dest, mode="drop")
         )
-        overflow = jnp.maximum(total - self.arrival_slots, 0)
-        return Arrivals(destination, count.astype(jnp.int32), overflow.astype(jnp.int32))
+        return Arrivals(destination, count.astype(jnp.int32), overflow)
+
+    def _draw_slots(self, key, episode_fraction):
+        """Poisson traffic as up to `arrival_slots` arrivals, in queueing order.
+
+        Poisson splitting: independent Poisson counts per floor are one Poisson
+        total with each arrival's origin drawn in proportion to the rates. So
+        draw the total, then an origin and a destination for each slot, all by
+        inverse CDF from uniforms: no Gumbel draw per floor for every slot of
+        every floor, and no rejection loop for the Poisson total (each
+        iteration of which is a kernel launch on a GPU).
+
+        Returns origin and destination per slot, which slots are used, and the
+        count drawn beyond the slots (lost, so counted in `dropped`).
+        """
+        k = self.arrival_slots
+        rates, joint = self.arrival_model(episode_fraction)
+        u = jax.random.uniform(key, (2 * k + 1,), dtype=rates.dtype)
+        # The total: how many of P(N <= 0), ..., P(N <= k) the uniform passes.
+        # k + 1 means more than k. In float32 the cumulative sum reaches 1
+        # once the tail is under 6e-8 (past 16 arrivals on `full`), so totals
+        # beyond that, about once in 2e7 steps, come out as about 16.
+        mean = rates.sum()
+        n = jnp.arange(k + 1, dtype=rates.dtype)
+        log_pmf = n * jnp.log(jnp.maximum(mean, 1e-30)) - mean - jax.lax.lgamma(n + 1)
+        log_pmf = jnp.where(n == 0, -mean, log_pmf)
+        total = (u[0] >= jnp.cumsum(jnp.exp(log_pmf))).sum()
+        origin = _inverse_cdf(rates, u[1 : k + 1])
+        dest = _inverse_cdf(joint[origin], u[k + 1 :]).astype(jnp.int32)
+        used = jnp.arange(k) < total
+        overflow = jnp.maximum(total - k, 0).astype(jnp.int32)
+        return origin, dest, used, overflow
 
     def add_arrivals(self, state, arrivals):
         """Append each floor's arrivals to its queue, dropping any past the caps."""
