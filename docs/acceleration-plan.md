@@ -573,15 +573,62 @@ _Source: `scripts/learning_quality.sh`, then `python -m elevator_rl.tune_report 
 - **Throughput beats sample efficiency here, up to a point.** 16,384 envs runs 1.4× faster than 1,024 but learns so much less per sample that it ends last: its 131k-step rollout gives only 24 gradient steps.
 - **PPO now beats the heuristic on `full`,** in under 3 minutes of training.
 
+### Hyperparameter search: tuning pays at the fast settings
+
+At 1,024 envs × 8 steps, Optuna found settings that reach 73.9 after 20M steps (one seed), against 63.5 for the untuned setting after 5M. At the recipe's 64 × 32 the best of 25 trials gains only about a point (70.6 vs 69.9, same seed). Both start from the warm start on `full`, Warp env.
+
+Fast settings (1,024 × 8, 20M steps a trial; 30 trials, 10 pruned), top six:
+
+| Learning rate | Epochs | Minibatch | Entropy coef. | Clip | Value coef. | Final reward | PPO steps/s |
+| --: | --: | --: | --: | --: | --: | --: | --: |
+| 5.2e-5 | 10 | 2,048 | 2.8e-5 | 0.1 | 0.25 | 73.9 | 88,975 |
+| 5.2e-5 | 10 | 512 | 4.6e-5 | 0.2 | 0.25 | 73.2 | 58,258 |
+| 2.0e-5 | 10 | 512 | 2.7e-5 | 0.2 | 0.25 | 72.6 | 58,312 |
+| 3.8e-5 | 10 | 2,048 | 7.2e-5 | 0.2 | 0.25 | 72.5 | 88,958 |
+| 4.8e-5 | 5 | 512 | 4.2e-4 | 0.2 | 0.25 | 72.3 | 106,529 |
+| 4.9e-5 | 1 | 512 | 6.4e-3 | 0.3 | 0.25 | 71.5 | 331,526 |
+
+Recipe settings (64 × 32, 5M steps a trial; 25 trials), top four:
+
+| Learning rate | Epochs | Minibatch | Entropy coef. | Clip | γ | Final reward | PPO steps/s |
+| --: | --: | --: | --: | --: | --: | --: | --: |
+| 2.4e-5 | 10 | 64 | 2.3e-3 | 0.05 | 0.98 | 70.6 | 13,054 |
+| 6.0e-5 | 3 | 64 | 5.7e-3 | 0.1 | 0.98 | 70.5 | 32,205 |
+| 4.2e-5 | 3 | 64 | 6.7e-3 | 0.1 | 0.99 | 69.2 | 32,313 |
+| 6.5e-5 | 10 | 512 | 8.4e-4 | 0.3 | 0.99 | 69.2 | 36,855 |
+
+_Source: `scripts/hyperparameter_runs.sh`, then `python -m elevator_rl.tune_report runs/tune/search/<name> --importance`._
+
+- **The learning rate matters most at the fast settings** (PED-ANOVA importance 0.86; entropy coefficient 0.12). The good range, 2–6e-5, is close to the recipe's 3e-5: fine-tuning a cloned policy wants a low rate whatever the batch.
+- **More epochs win back what big batches lose per sample.** 1 epoch reaches less after 20M steps (71.5 vs 73.9) but runs 3.7× faster.
+- **At the recipe's settings the entropy coefficient matters most** (importance 0.70), and the gains are within seed noise.
+
+### Longer runs: tuned PPO beats the heuristic by 8
+
+With the fast search's best settings, PPO reaches 77.0 ± 2.4 passengers per episode after 50M steps (seeds: 77.4, 74.4, 79.2), in 9.5 minutes of training; the heuristic delivers 69. Untuned, the same setting levels off at 70.3 ± 0.5 (3.7 minutes).
+
+Network size with the tuned settings, 20M steps (mean eval between 17M and 20M, 3 seeds):
+
+| Hidden layers | Reward at 20M steps | PPO steps/s | Minutes to 20M |
+| --- | --: | --: | --: |
+| 64 × 64 | 66.8 ± 1.3 | 174,400 | 1.9 |
+| 128 × 128 | 70.2 ± 0.8 | 140,416 | 2.4 |
+| 256 × 256 | 73.6 ± 2.0 | 87,700 | 3.8 |
+| 512 × 512 | 74.8 ± 0.3 | 44,899 | 7.4 |
+
+- **The tuned settings keep improving where the untuned ones stop:** untuned plateaus by 20M steps; tuned still climbs at 50M.
+- **256 × 256 is the best default.** 64 × 64 loses 7 passengers; 512 × 512 gains 1 at half the speed, and in its 7.4 minutes 256 × 256 is already at 75–77.
+- **Seed spread is wide at the top** (74.4 to 79.2), so single-seed differences of a point or two, as in the searches, are within noise.
+
 ## Backlog: to come back to
 
 These were recommended along the way and deferred, so Phases 3 and 4 could go ahead first. Logged 2026-10-10.
 
 - [x] **Check learning quality at the fast settings.** On `full`, compare the recipe (minibatch 64, 64 envs × 32 steps) against minibatch 512 and 2048, and 64 vs 1024 envs, on the GPU. Plot reward against wall-clock minutes. Large minibatches learned worse per sample on `original`, so the 17× throughput may cost reward. Done in JAX (see "Learning quality: at equal time, the fast settings win" below): per sample, larger minibatches learn worse (5M steps: 68.6 recipe, 63.5 at 1,024 × 8 : 2,048, 57.2 at 16,384 envs), but at equal time 1,024 × 8 : 2,048 learns best, 71.5 ± 1.8 in 2.9 minutes, above the heuristic's 69.
-- [ ] **Tune PPO for large minibatches** if that check shows a gap: a higher learning rate, more gradient epochs per rollout, or a learning-rate schedule.
-- [ ] **Longer training runs on `full`,** deferred until the speed-ups land. Target: beat the heuristic's 69 (the recipe reaches 66.8 ± 1.3 after 500k steps).
+- [x] **Tune PPO for large minibatches** if that check shows a gap: a higher learning rate, more gradient epochs per rollout, or a learning-rate schedule. Done: at 1,024 × 8 : 2,048, 10 epochs, lr 5.2e-5, clip 0.1 and value coefficient 0.25 reach 77.0 ± 2.4 after 50M steps, against 70.3 ± 0.5 untuned. More epochs helped; a higher learning rate did not (2–6e-5 is best).
+- [x] **Longer training runs on `full`,** deferred until the speed-ups land. Target: beat the heuristic's 69 (the recipe reaches 66.8 ± 1.3 after 500k steps). Done: 77.0 ± 2.4 after 50M steps (9.5 minutes of training, 3 seeds), 8 above the heuristic, and still rising.
 - [ ] **Learner defaults in `train.py`:** set torch threads to the physical core count (8 here, against 1 now), and suggest `--device cuda` when minibatch ≥ 512.
-- [ ] **Replace SB3's per-step overhead.** With a GPU learner, the policy forward pass and SB3 bookkeeping take 28–68% of the time. Done in Phase 4: the JAX PPO removes it (7× at the recipe's settings).
+- [x] **Replace SB3's per-step overhead.** With a GPU learner, the policy forward pass and SB3 bookkeeping take 28–68% of the time. Done in Phase 4: the JAX PPO removes it (7× at the recipe's settings).
 - [ ] **Reward parity per phase:** run the `benchmark.py` reward table across 3 seeds for each env backend (Python, C++, EnvPool, JAX), as the milestone list asks.
 - [x] **DLL route (open question in the comments):** a flat `extern "C"` API loaded with `ctypes`, as a comparison with the nanobind module. Done on branch ctypes-dll: see its result section under Phase 2.
 - [ ] **Packaging:** build the C++ module with scikit-build-core so `uv sync` compiles it, keeping the pure-Python fallback.
@@ -602,4 +649,4 @@ Added after Warp:
 - [ ] **Profile the JAX PPO's policy and update.** With the Warp env, stepping is only about a tenth of training time, so the learner is the bottleneck again.
 - [ ] **Port the target action mode and the `custom` observation to Warp,** alongside the JAX port.
 - [ ] **Run the Warp tests in CI** on Warp's CPU backend, if the compile time (about a minute per config) is acceptable there.
-- [ ] **Hyperparameter testing.** Sweep PPO's learning rate, epochs, minibatch size, entropy coefficient, clip range and network size, and compare reward across seeds. Adding Hydra may make this easier: one config tree for the env preset, backend and PPO settings, with multirun sweeps (and an Optuna sweeper) instead of the separate argparse CLIs in `train.py`, `jax_ppo.py` and `sweep.py`.
+- [x] **Hyperparameter testing.** Done: tooling in `elevator_rl.tune` (Hydra), `tune_search` (Optuna) and `tune_report`; results in "Hyperparameter search" and "Longer runs" below. Sweep PPO's learning rate, epochs, minibatch size, entropy coefficient, clip range and network size, and compare reward across seeds. Adding Hydra may make this easier: one config tree for the env preset, backend and PPO settings, with multirun sweeps (and an Optuna sweeper) instead of the separate argparse CLIs in `train.py`, `jax_ppo.py` and `sweep.py`.
