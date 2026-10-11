@@ -642,7 +642,7 @@ Added after Phases 3 and 4:
 - [x] **Port the imitation warm start to JAX,** so the `full` recipe (behaviour cloning, then PPO at learning rate 3e-5) can run there. Done: `jax_imitate` clones the heuristic into the JAX PPO's networks (`jax_ppo --pretrain 100000`, or `warm_start.samples=100000` in the Hydra config). It starts at 54 passengers (SB3's clone: 57.5), and the recipe then reaches 68.6 ± 1.1 after 5M steps (3 seeds), level with the heuristic's 69.
 - [x] **Port the target action mode and the `custom` observation to JAX.** Done: both match Python exactly, step for step on every preset (float64), and the JAX PPO one-hot encodes `custom` as SB3 does (`--obs-type custom --action-mode target`).
 - [ ] **Profile the JAX env** with `jax.profiler` to find what limits it at about 660k env steps/s; applying the actions is half of each step.
-- [ ] **Try EnvPool's XLA interface,** which lets JAX step EnvPool envs from inside `jit`, as a bridge between Phases 3 and 4.
+- [x] **Try EnvPool's XLA interface,** which lets JAX step EnvPool envs from inside `jit`, as a bridge between Phases 3 and 4. Tried (`scripts/time_envpool_xla.py`): our trimmed wheel's `pool.xla()` works, and a `lax.scan` steps EnvPool on the GPU at 384k env steps/s with 64 envs and 696k with 256 (72–75% of its Python API's 530k and 930k), 3–4× the JAX and Warp envs at those small batches. But it deadlocked intermittently: always on CPU JAX past a few steps, and once on the GPU at 1,024 envs. Not wired into the JAX PPO: Warp is faster at scale and reliable.
 
 Added after Warp:
 
