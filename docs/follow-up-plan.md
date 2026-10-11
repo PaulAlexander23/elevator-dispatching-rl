@@ -86,7 +86,7 @@ That is about 2K = 64 uniforms per env per step instead of 14,400 Gumbel draws. 
 - [x] Keep exact parity: the parity tests inject Python's arrivals, so they don't depend on the draw. Run them unchanged.
 - [x] Add or extend a statistical test: per-floor count means and the destination histogram against the Python env's, over many steps.
 - [x] Re-run `scripts/profile_jax_env.py` and `scripts/time_jax_env.py`: arrivals' share, env steps/s at 1,024 and 16,384 envs.
-- [ ] (queued: `follow_up_runs.sh arrivals`) One reward-parity run on the JAX env (`scripts/reward_parity.py`, 3 seeds) to confirm learning is unchanged.
+- [x] One reward-parity run on the JAX env (`scripts/reward_parity.py`, 3 seeds) to confirm learning is unchanged.
 
 **Note.** The Warp env already draws only the arrivals that happen, so this speeds up the JAX env, not the Warp training path.
 
@@ -123,6 +123,8 @@ The step is 33% faster at 1,024 envs and 18% at 16,384. Arrivals still cost 0.42
 - **`jax.random.poisson` is a rejection loop**, a `while_loop` whose every iteration is a kernel launch on the GPU. Drawing the total by inverse CDF over P(N ≤ 0..32) (one uniform, no loop) saved 0.3 ms at 1,024 envs. In float32 the cumulative sum reaches 1 once the tail is under 6e-8, so totals beyond 16 on `full` (about once in 2e7 steps) come out as about 16.
 - **At 16,384 envs queueing dominates**: 8.6 ms, against about 0.5 ms before. Writing the 32 slots straight into the queues (one scatter of 32 writes, not two over 30 × 16) cut the step to 1.37 ms at 1,024 envs but raised it to 34 ms at 16,384; building the per-floor layout with a one-hot product instead of a scatter gave 1.54 and 28.5 ms. Both were dropped. Why queueing got dearer (the old destinations came straight from an elementwise argmax, the new ones from a scatter) is open; a `jax.profiler` trace would tell.
 - Training uses the Warp env, which already draws only the arrivals that happen, so none of this changes the PPO numbers.
+
+**Learning is unchanged.** Tuned PPO (`conf/tuned.yaml`) on the JAX env with the new draw, 20M steps, 3 seeds (`follow_up_runs.sh arrivals`): 74.3, 71.8 and 73.4, so 73.2 ± 1.0 against 73.6 ± 2.0 on the Warp env. It trained at about 83.6k PPO steps/s, 4.0 minutes per run.
 ## 3. Smaller observation or a shared per-lift encoder
 
 **Goal.** Make the compute-bound PPO epochs cheaper without losing reward. The `relative` observation has 1,220 inputs and the first layers hold 82% of the weights. Shrinking the hidden layers is not the answer: 64 × 64 networks lost 7 passengers.
