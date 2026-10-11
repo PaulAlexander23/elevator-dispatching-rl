@@ -620,6 +620,27 @@ Network size with the tuned settings, 20M steps (mean eval between 17M and 20M, 
 - **256 × 256 is the best default.** 64 × 64 loses 7 passengers; 512 × 512 gains 1 at half the speed, and in its 7.4 minutes 256 × 256 is already at 75–77.
 - **Seed spread is wide at the top** (74.4 to 79.2), so single-seed differences of a point or two, as in the searches, are within noise.
 
+### Profiling the JAX PPO: the epochs are compute-bound
+
+The PPO epochs, not the env, take most of each update: 54–80%, rising with the batch. On the Warp env at 16,384 envs they run about 6 TFLOPS, two-thirds of the GTX 1080's FP32 peak, so the remaining lever is the network's size, not more engineering.
+
+Per update (one rollout plus 3 epochs), `full`, relative obs, 256×256 MLPs; share of the update in brackets:
+
+| Env | Envs × steps : minibatch | Env | Policy | Rollout | Epochs + GAE | Update | PPO steps/s |
+|---|---|--:|--:|--:|--:|--:|--:|
+| jax | 64×32 : 64 | 17.4 ms (25%) | 3.1 ms (4%) | 26.6 ms (38%) | 43.7 ms (62%) | 70.3 ms | 29,135 |
+| jax | 1024×8 : 2048 | 11.3 ms (24%) | 3.7 ms (8%) | 21.6 ms (46%) | 25.5 ms (54%) | 47.1 ms | 173,996 |
+| jax | 16384×8 : 16384 | 117.7 ms (21%) | 40.2 ms (7%) | 255.5 ms (46%) | 301.5 ms (54%) | 557.0 ms | 235,330 |
+| warp | 64×32 : 64 | 13.3 ms (21%) | 3.0 ms (5%) | 20.2 ms (32%) | 42.8 ms (68%) | 63.0 ms | 32,505 |
+| warp | 1024×8 : 2048 | 5.9 ms (17%) | 3.6 ms (10%) | 10.2 ms (29%) | 25.5 ms (71%) | 35.6 ms | 229,893 |
+| warp | 16384×8 : 16384 | 30.7 ms (8%) | 39.8 ms (11%) | 73.5 ms (20%) | 301.6 ms (80%) | 375.1 ms | 349,429 |
+
+_Source: `scripts/profile_jax_ppo.py --trace runs/trace` (GTX 1080; env, policy and rollout are timed as separate compiled programs; epochs = update − rollout)._
+
+- **The epochs are compute-bound.** Two 256×256 MLPs on 1,220 inputs are about 0.76M weights, so a forward and backward pass costs about 4.6 MFLOP per sample. 16,384 × 8 samples × 3 epochs in 302 ms is about 6 TFLOPS, against the GTX 1080's peak of about 8.9. The first layer holds 80% of the weights: a smaller observation or first layer is the next speed-up, and it may cost reward.
+- **The JAX env's rollout costs more than its parts.** On the JAX env, env + policy = 158 ms but the rollout takes 256 ms at 16,384 envs: storing the trajectory and the masked auto-reset add about 100 ms. On Warp the parts add up (71 vs 74 ms), as its resets run only in the threads that need them.
+- **The policy forward pass is cheap:** 4–11% of the update.
+
 ## Backlog: to come back to
 
 These were recommended along the way and deferred, so Phases 3 and 4 could go ahead first. Logged 2026-10-10.
@@ -642,11 +663,11 @@ Added after Phases 3 and 4:
 - [x] **Port the imitation warm start to JAX,** so the `full` recipe (behaviour cloning, then PPO at learning rate 3e-5) can run there. Done: `jax_imitate` clones the heuristic into the JAX PPO's networks (`jax_ppo --pretrain 100000`, or `warm_start.samples=100000` in the Hydra config). It starts at 54 passengers (SB3's clone: 57.5), and the recipe then reaches 68.6 ± 1.1 after 5M steps (3 seeds), level with the heuristic's 69.
 - [x] **Port the target action mode and the `custom` observation to JAX.** Done: both match Python exactly, step for step on every preset (float64), and the JAX PPO one-hot encodes `custom` as SB3 does (`--obs-type custom --action-mode target`).
 - [ ] **Profile the JAX env** with `jax.profiler` to find what limits it at about 660k env steps/s; applying the actions is half of each step.
-- [ ] **Try EnvPool's XLA interface,** which lets JAX step EnvPool envs from inside `jit`, as a bridge between Phases 3 and 4.
+- [x] **Try EnvPool's XLA interface,** which lets JAX step EnvPool envs from inside `jit`, as a bridge between Phases 3 and 4. Tried (`scripts/time_envpool_xla.py`): our trimmed wheel's `pool.xla()` works, and a `lax.scan` steps EnvPool on the GPU at 384k env steps/s with 64 envs and 696k with 256 (72–75% of its Python API's 530k and 930k), 3–4× the JAX and Warp envs at those small batches. But it deadlocked intermittently: always on CPU JAX past a few steps, and once on the GPU at 1,024 envs. Not wired into the JAX PPO: Warp is faster at scale and reliable.
 
 Added after Warp:
 
-- [ ] **Profile the JAX PPO's policy and update.** With the Warp env, stepping is only about a tenth of training time, so the learner is the bottleneck again.
+- [x] **Profile the JAX PPO's policy and update.** With the Warp env, stepping is only about a tenth of training time, so the learner is the bottleneck again. Done (`scripts/profile_jax_ppo.py`): the PPO epochs take 54–80% of each update. At 16,384 envs they run about 6 TFLOPS, two-thirds of the GTX 1080's FP32 peak, so the learner is close to compute-bound; the 256×256 MLP's first layer (1,220 inputs) holds 80% of the weights.
 - [x] **Port the target action mode and the `custom` observation to Warp,** alongside the JAX port. Done: exact parity with Python on every preset. Two Warp pitfalls on the way: a closure constant (`CAP`) read in one static branch of a `wp.func` compiled to an uninitialised register (fixed with `wp.static(...)`), and Warp's variables are function-wide, so two branches can't use one name with different types.
 - [x] **Run the Warp tests in CI** on Warp's CPU backend, if the compile time (about a minute per config) is acceptable there. Done: on the CPU backend the kernels compile in seconds (LLVM, not NVRTC), and the 13 Warp tests take about 2 minutes from a cold cache. CI installs PyPI's `warp-lang` over the CPU JAX group and caches `~/.cache/warp`.
 - [x] **Hyperparameter testing.** Done: tooling in `elevator_rl.tune` (Hydra), `tune_search` (Optuna) and `tune_report`; results in "Hyperparameter search" and "Longer runs" below. Sweep PPO's learning rate, epochs, minibatch size, entropy coefficient, clip range and network size, and compare reward across seeds. Adding Hydra may make this easier: one config tree for the env preset, backend and PPO settings, with multirun sweeps (and an Optuna sweeper) instead of the separate argparse CLIs in `train.py`, `jax_ppo.py` and `sweep.py`.
