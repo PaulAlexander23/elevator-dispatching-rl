@@ -13,8 +13,12 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
-      # uv's own Python, which ships the headers the C++ module needs.
+      # uv's own Python, which ships the headers the C++ module needs. The sync
+      # builds the package's C++ (elevator_rl._cpp, libelevator_c) with
+      # scikit-build-core; check it did, as a failed build falls back to pure
+      # Python and the C++ tests would quietly skip.
       - run: uv sync --locked --python-preference only-managed --group jax --group hydra
+      - run: uv run --no-sync python -c "from elevator_rl import cpp_env, ctypes_env; assert cpp_env.available() and ctypes_env.LIBRARY_PATH.exists()"
       # The Warp env's tests, on Warp's CPU backend (the runners have no GPU).
       # PyPI's wheel runs there; the warp group's CUDA 12 build and CUDA JAX
       # are only needed on a GPU. A cold kernel cache takes about 2 minutes.
@@ -25,6 +29,7 @@ jobs:
           key: warp-kernels-${{ hashFiles('src/elevator_rl/warp_env.py', 'src/elevator_rl/building*.py') }}
       - run: uv run ruff check .
       - run: uv run ruff format --check .
+      # The replay and benchmark tools (for tests/test_cpp.py) and the C++ unit tests.
       - name: Build and test the C++ port
         run: |
           cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release -DPython_EXECUTABLE=$PWD/.venv/bin/python

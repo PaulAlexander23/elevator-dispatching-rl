@@ -27,8 +27,7 @@ def _require():
     if _cpp is None:
         raise ImportError(
             "elevator_rl._cpp is not built: run "
-            "`cmake -S cpp -B cpp/build -DPython_EXECUTABLE=.venv/bin/python && "
-            "cmake --build cpp/build`"
+            "`uv sync` (it needs CMake and a C++17 compiler; see the README)"
         )
     return _cpp
 

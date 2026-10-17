@@ -19,6 +19,12 @@ uv sync --extra gnn         # + torch-geometric for scripts/gnn.py
 uv sync --no-group cpu --group cuda   # CUDA torch instead of the CPU build
 ```
 
+`uv sync` also compiles the C++ port into the package (with
+[scikit-build-core](https://scikit-build-core.readthedocs.io/)), which needs
+CMake 3.20+ and a C++17 compiler; the first build takes about 5 seconds.
+Without a compiler, or with `ELEVATOR_NO_CPP=1`, it installs the
+pure-Python package, and the C++ backends report that they are not built.
+
 torch comes from PyTorch's CPU index unless you ask for the `cuda` group,
 which installs the CUDA 12.6 build (the newest that still runs on GTX 10xx
 GPUs). The two groups conflict, so only one is installed at a time. A plain
@@ -204,10 +210,9 @@ Random draws differ from NumPy's, so the random-policy statistics are
 compared instead.
 
 ```sh
-uv sync                                            # installs nanobind for the binding
+uv sync                                            # builds elevator_rl._cpp and libelevator_c
 cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release -DPython_EXECUTABLE=$PWD/.venv/bin/python
-cmake --build cpp/build                            # also builds src/elevator_rl/_cpp*.so
-                                                   # and src/elevator_rl/libelevator_c.so
+cmake --build cpp/build                            # the replay and benchmark tools, C++ tests
 ctest --test-dir cpp/build                         # C++ unit tests
 uv run pytest tests/test_cpp.py tests/test_cpp_env.py tests/test_ctypes_env.py
 cpp/build/elevator_bench --preset full --steps 2000000
@@ -224,8 +229,10 @@ uv run python -m elevator_rl.train --preset full --obs-type relative --vec-env c
     --pretrain 100000 --learning-rate 3e-5
 ```
 
-Rebuild with `cmake --build cpp/build` after changing the C++; the module is
-not part of the installed package.
+After changing the C++, the next `uv run` or `uv sync` rebuilds the package
+(uv watches `cpp/` as well as `pyproject.toml`); `uv run --no-sync` keeps the
+old build. The hand build in `cpp/build` is only for the tools and the C++
+tests: its copies of the modules stay in `cpp/build/elevator_rl/`.
 
 The same env is also built as a plain shared library with a flat
 `extern "C"` API (`cpp/capi/elevator_c.h`), which needs no Python headers
@@ -322,6 +329,20 @@ the `warp` group installs the CUDA 12 build from Warp's GitHub release. The
 kernels compile with `fuse_fp` off, for the same rounding reason as the JAX
 and C++ ports; the first build of each configuration takes about a minute
 (Warp caches it in `~/.cache/warp`).
+
+## Multi-agent view
+
+`elevator_rl.marl_env` presents the JAX and Warp envs as multi-agent envs,
+one agent per lift, in the layout Mava uses (Jumanji's functional API with an
+agents axis): each lift's block of the `relative` observation as its view,
+the whole observation as the global state for a centralised critic, an action
+mask, and the team reward repeated per lift. `MultiAgentEnv` wraps one JAX env
+and works under `jit` and `vmap`; `make_vec_env` batches either env with
+auto-reset. It doesn't depend on Mava or Jumanji.
+
+```sh
+uv run pytest tests/test_marl_env.py
+```
 
 ## Hyperparameter testing
 

@@ -6,7 +6,8 @@ Each part is compiled on its own and timed per rollout of n_envs x n_steps:
 - rollout: both together, as `make_train` collects a rollout;
 - update: one whole `make_train` update (rollout, GAE and the PPO epochs).
 The PPO epochs and GAE take update - rollout. Preset full, relative obs,
-256x256 MLPs, 3 epochs.
+256x256 MLPs unless `--net-arch`, 3 epochs unless `--n-epochs`; `--lift-encoder 128` adds the
+shared per-lift first layer, and `--algo mappo` the shared per-lift actor.
 
     uv run --group warp python scripts/profile_jax_ppo.py --backends jax warp
     uv run --group warp python scripts/profile_jax_ppo.py --trace /tmp/trace
@@ -45,9 +46,28 @@ def make_env(backend, preset="full"):
     return JaxBuildingEnv(preset, reward_shaping=True)
 
 
-def profile(backend, n_envs, n_steps, batch_size, repeats, trace=None):
+def profile(
+    backend,
+    n_envs,
+    n_steps,
+    batch_size,
+    repeats,
+    trace=None,
+    n_epochs=3,
+    lift_encoder=0,
+    net_arch=(256, 256),
+    algo="ppo",
+):
     env = make_env(backend)
-    config = PPOConfig(n_envs=n_envs, n_steps=n_steps, batch_size=batch_size, net_arch=(256, 256))
+    config = PPOConfig(
+        n_envs=n_envs,
+        n_steps=n_steps,
+        batch_size=batch_size,
+        n_epochs=n_epochs,
+        net_arch=net_arch,
+        lift_encoder=lift_encoder,
+        algo=algo,
+    )
     init, update = make_train(env, config)
     runner = init(jax.random.key(0))
     n_lifts = env.config.n_lifts
@@ -110,7 +130,17 @@ def main():
     parser.add_argument("--backends", nargs="+", choices=("jax", "warp"), default=["jax", "warp"])
     parser.add_argument("--repeats", type=int, default=20)
     parser.add_argument("--trace", help="directory for jax.profiler traces")
+    parser.add_argument("--n-epochs", type=int, default=3)
+    parser.add_argument("--lift-encoder", type=int, default=0)
+    parser.add_argument("--net-arch", type=int, nargs="+", default=[256, 256])
+    parser.add_argument("--algo", choices=("ppo", "mappo"), default="ppo")
+    parser.add_argument(
+        "--settings", nargs="+", help="envs x steps : minibatch, as 1024x8:2048 (default: all)"
+    )
     args = parser.parse_args()
+    settings = SETTINGS
+    if args.settings:
+        settings = [tuple(int(x) for x in s.replace(":", "x").split("x")) for s in args.settings]
 
     print(
         "| Env | Envs x steps : minibatch | Env | Policy | Rollout | Epochs + GAE | Update "
@@ -118,8 +148,19 @@ def main():
     )
     print("|---|---|--:|--:|--:|--:|--:|--:|")
     for backend in args.backends:
-        for n_envs, n_steps, batch_size in SETTINGS:
-            t = profile(backend, n_envs, n_steps, batch_size, args.repeats, args.trace)
+        for n_envs, n_steps, batch_size in settings:
+            t = profile(
+                backend,
+                n_envs,
+                n_steps,
+                batch_size,
+                args.repeats,
+                args.trace,
+                args.n_epochs,
+                args.lift_encoder,
+                tuple(args.net_arch),
+                args.algo,
+            )
             total = t["update"]
             epochs = total - t["rollout"]
 

@@ -1,0 +1,25 @@
+# The tuned PPO of docs/acceleration-plan.md ("Longer runs": 77.0 ± 2.4 after
+# 50M steps): the fast search's best settings after the imitation warm start,
+# on the Warp env. Select it with --config-name, e.g.
+#   python -m elevator_rl.tune -m --config-name tuned seed=0,1,2 timesteps=20_000_000
+#   python -m elevator_rl.tune -m --config-name tuned ppo.algo=mappo seed=0,1,2
+defaults:
+  - tune
+  - _self_
+
+backend: warp
+timesteps: 50_000_000
+eval_freq: 1_000_000
+
+warm_start:
+  samples: 100_000
+
+ppo:
+  n_envs: 1024
+  n_steps: 8
+  batch_size: 2048
+  n_epochs: 10
+  learning_rate: 5.21e-5
+  clip_range: 0.1
+  ent_coef: 2.77e-5
+  vf_coef: 0.25

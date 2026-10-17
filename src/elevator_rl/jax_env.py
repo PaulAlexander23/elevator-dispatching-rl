@@ -34,6 +34,7 @@ returned as float32 holding small integers; a learner one-hot encodes it
 (`one_hot`), as SB3 does for a MultiDiscrete space.
 """
 
+import math
 from typing import NamedTuple
 
 import jax
@@ -88,6 +89,7 @@ class Arrivals(NamedTuple):
 
     destination: jax.Array  # (floors, MAX_ARRIVALS) int
     count: jax.Array  # (floors,) int
+    overflow: jax.Array = 0  # () int: arrivals drawn past the step's slots, lost
 
 
 def arrivals_from_list(pairs, n_floors):
@@ -97,7 +99,39 @@ def arrivals_from_list(pairs, n_floors):
     for floor, dest in pairs:
         destination[floor, count[floor]] = dest
         count[floor] += 1
-    return Arrivals(jnp.asarray(destination), jnp.asarray(count))
+    return Arrivals(jnp.asarray(destination), jnp.asarray(count), jnp.zeros((), jnp.int32))
+
+
+def arrival_slots(config):
+    """Slots for one step's arrivals, over all floors, under Poisson traffic.
+
+    The expected total is arrival_probability * n_floors whatever the mix
+    (each pattern's origins sum to one, as do the mix's weights). Mean plus
+    10 standard deviations plus 10, rounded up to 8: 32 on `full` (a mean
+    of 3), which Poisson(3) exceeds about once in 1e23 steps.
+    """
+    mean = config.arrival_probability * config.n_floors
+    return max(8, 8 * math.ceil((mean + 10 * math.sqrt(mean) + 10) / 8))
+
+
+def _inverse_cdf(weights, u):
+    """For each u in [0, 1), the index it falls in under `weights` (last axis).
+
+    `weights` is unnormalised, one row or one row per u. Zero-weight indices
+    are never chosen, even when rounding puts u at the very end.
+    """
+    cdf = jnp.cumsum(weights, axis=-1)
+    index = (u[:, None] * cdf[..., -1:] >= cdf).sum(axis=-1)
+    last = weights.shape[-1] - 1 - jnp.argmax(weights[..., ::-1] > 0, axis=-1)
+    return jnp.minimum(index, last)
+
+
+def _slot_rank(origin, used):
+    """Each slot's place in its floor's queue order: the number of earlier
+    used slots from the same floor."""
+    slot = jnp.arange(origin.shape[0])
+    earlier = (origin[:, None] == origin[None, :]) & used[None, :] & (slot[None, :] < slot[:, None])
+    return earlier.sum(axis=1)
 
 
 def _rounded(product):
@@ -155,6 +189,7 @@ class JaxBuildingEnv:
         origins, destinations = _traffic_patterns(c.n_floors)
         self._origins = origins
         self._destinations = destinations
+        self.arrival_slots = arrival_slots(c)
         if obs_type == "relative":
             self.observation_size = c.n_lifts * (
                 RELATIVE_LIFT_FIELDS + (2 * c.n_floors - 1) * RELATIVE_FLOOR_FIELDS
@@ -258,13 +293,48 @@ class JaxBuildingEnv:
             dest = dest + (dest >= floors)
             destination = jnp.zeros((n, MAX_ARRIVALS), jnp.int32).at[:, 0].set(dest)
             return Arrivals(destination, count)
-        rates, joint = self.arrival_model(episode_fraction)
-        count = jax.random.poisson(k_count, rates, (n,)).astype(jnp.int32)
-        logits = jnp.log(jnp.maximum(joint, 1e-30))
-        destination = jax.random.categorical(
-            k_dest, logits[:, None, :], axis=-1, shape=(n, MAX_ARRIVALS)
+        origin, dest, used, overflow = self._draw_slots(key, episode_fraction)
+        # Lay the slots out per floor, in slot order, for add_arrivals. (Writing
+        # each slot straight into its queue, or laying them out with a one-hot
+        # product instead of a scatter, made the GPU step slower at 16,384 envs.)
+        count = (jax.nn.one_hot(origin, n, dtype=jnp.int32) * used[:, None]).sum(axis=0)
+        destination = (
+            jnp.zeros((n, MAX_ARRIVALS), jnp.int32)
+            .at[jnp.where(used, origin, n), _slot_rank(origin, used)]
+            .set(dest, mode="drop")
         )
-        return Arrivals(destination.astype(jnp.int32), count)
+        return Arrivals(destination, count.astype(jnp.int32), overflow)
+
+    def _draw_slots(self, key, episode_fraction):
+        """Poisson traffic as up to `arrival_slots` arrivals, in queueing order.
+
+        Poisson splitting: independent Poisson counts per floor are one Poisson
+        total with each arrival's origin drawn in proportion to the rates. So
+        draw the total, then an origin and a destination for each slot, all by
+        inverse CDF from uniforms: no Gumbel draw per floor for every slot of
+        every floor, and no rejection loop for the Poisson total (each
+        iteration of which is a kernel launch on a GPU).
+
+        Returns origin and destination per slot, which slots are used, and the
+        count drawn beyond the slots (lost, so counted in `dropped`).
+        """
+        k = self.arrival_slots
+        rates, joint = self.arrival_model(episode_fraction)
+        u = jax.random.uniform(key, (2 * k + 1,), dtype=rates.dtype)
+        # The total: how many of P(N <= 0), ..., P(N <= k) the uniform passes.
+        # k + 1 means more than k. In float32 the cumulative sum reaches 1
+        # once the tail is under 6e-8 (past 16 arrivals on `full`), so totals
+        # beyond that, about once in 2e7 steps, come out as about 16.
+        mean = rates.sum()
+        n = jnp.arange(k + 1, dtype=rates.dtype)
+        log_pmf = n * jnp.log(jnp.maximum(mean, 1e-30)) - mean - jax.lax.lgamma(n + 1)
+        log_pmf = jnp.where(n == 0, -mean, log_pmf)
+        total = (u[0] >= jnp.cumsum(jnp.exp(log_pmf))).sum()
+        origin = _inverse_cdf(rates, u[1 : k + 1])
+        dest = _inverse_cdf(joint[origin], u[k + 1 :]).astype(jnp.int32)
+        used = jnp.arange(k) < total
+        overflow = jnp.maximum(total - k, 0).astype(jnp.int32)
+        return origin, dest, used, overflow
 
     def add_arrivals(self, state, arrivals):
         """Append each floor's arrivals to its queue, dropping any past the caps."""
@@ -280,7 +350,7 @@ class JaxBuildingEnv:
         queue_len = jnp.minimum(state.queue_len + count, MAX_QUEUE)
         going_up = keep & (arrivals.destination > jnp.arange(n)[:, None])
         queue_up = state.queue_up + going_up.sum(axis=1, dtype=jnp.int32)
-        lost = arrivals.count.sum() - (queue_len - state.queue_len).sum()
+        lost = arrivals.count.sum() - (queue_len - state.queue_len).sum() + arrivals.overflow
         # sum() widens int32 to int64 under jax_enable_x64; keep the state's dtype.
         dropped = state.dropped + lost.astype(jnp.int32)
         return state._replace(queue=queue, queue_len=queue_len, queue_up=queue_up, dropped=dropped)
